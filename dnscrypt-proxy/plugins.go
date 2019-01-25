@@ -175,7 +175,8 @@ func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGloba
 			return packet, ret
 		}
 		if pluginsState.action == PluginsActionReject {
-			synth, err := RefusedResponseFromMessage(&msg)
+			// synth, err := RefusedResponseFromMessage(&msg)
+			synth, err := NameErrorResponseFromMessage(&msg)
 			if err != nil {
 				return nil, err
 			}
@@ -223,7 +224,8 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 			return packet, ret
 		}
 		if pluginsState.action == PluginsActionReject {
-			synth, err := RefusedResponseFromMessage(&msg)
+			// synth, err := RefusedResponseFromMessage(&msg)
+			synth, err := NameErrorResponseFromMessage(&msg)
 			if err != nil {
 				return nil, err
 			}

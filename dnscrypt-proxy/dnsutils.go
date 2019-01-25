@@ -40,6 +40,16 @@ func RefusedResponseFromMessage(srcMsg *dns.Msg) (*dns.Msg, error) {
 	return dstMsg, nil
 }
 
+func NameErrorResponseFromMessage(srcMsg *dns.Msg) (*dns.Msg, error) {
+	dstMsg, err := EmptyResponseFromMessage(srcMsg)
+	if err != nil {
+		return dstMsg, err
+	}
+	dstMsg.Rcode = dns.RcodeNameError
+	return dstMsg, nil
+}
+
+
 func HasTCFlag(packet []byte) bool {
 	return packet[2]&2 == 2
 }
