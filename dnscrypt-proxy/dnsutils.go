@@ -31,21 +31,52 @@ func EmptyResponseFromMessage(srcMsg *dns.Msg) (*dns.Msg, error) {
 	return dstMsg, nil
 }
 
-func RefusedResponseFromMessage(srcMsg *dns.Msg) (*dns.Msg, error) {
+func RefusedResponseFromMessage(srcMsg *dns.Msg, refusedCode bool) (*dns.Msg, error) {
 	dstMsg, err := EmptyResponseFromMessage(srcMsg)
 	if err != nil {
 		return dstMsg, err
 	}
-	dstMsg.Rcode = dns.RcodeRefused
+	if refusedCode {
+		dstMsg.Rcode = dns.RcodeRefused
+	} else {
+		dstMsg.Rcode = dns.RcodeSuccess
+		questions := srcMsg.Question
+		if len(questions) > 0 {
+			hinfo := new(dns.HINFO)
+			hinfo.Hdr = dns.RR_Header{Name: questions[0].Name, Rrtype: dns.TypeHINFO,
+				Class: dns.ClassINET, Ttl: 1}
+			hinfo.Cpu = "This query has been locally blocked"
+			hinfo.Os = "by dnscrypt-proxy"
+			dstMsg.Answer = []dns.RR{hinfo}
+		}
+	}
 	return dstMsg, nil
 }
 
-func NameErrorResponseFromMessage(srcMsg *dns.Msg) (*dns.Msg, error) {
+// This function returns RcodeNameError instead of RcodeSuccess
+// in a case where the query is filtered by blacklist.
+func NameErrorResponseFromMessage(srcMsg *dns.Msg, refusedCode bool) (*dns.Msg, error) {
 	dstMsg, err := EmptyResponseFromMessage(srcMsg)
 	if err != nil {
 		return dstMsg, err
 	}
-	dstMsg.Rcode = dns.RcodeNameError
+	// from 2.0.20
+	if refusedCode {
+		dstMsg.Rcode = dns.RcodeRefused
+	} else {
+		dstMsg.Rcode = dns.RcodeNameError
+		questions := srcMsg.Question
+		if len(questions) > 0 {
+			hinfo := new(dns.HINFO)
+			hinfo.Hdr = dns.RR_Header{Name: questions[0].Name, Rrtype: dns.TypeHINFO,
+				Class: dns.ClassINET, Ttl: 1}
+			hinfo.Cpu = "This query has been locally blocked"
+			hinfo.Os = "by dnscrypt-proxy"
+			dstMsg.Answer = []dns.RR{hinfo}
+		}
+	}
+	//
+	// dstMsg.Rcode = dns.RcodeNameError
 	return dstMsg, nil
 }
 

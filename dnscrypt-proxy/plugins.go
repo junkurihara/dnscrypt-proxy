@@ -21,9 +21,10 @@ const (
 
 type PluginsGlobals struct {
 	sync.RWMutex
-	queryPlugins    *[]Plugin
-	responsePlugins *[]Plugin
-	loggingPlugins  *[]Plugin
+	queryPlugins           *[]Plugin
+	responsePlugins        *[]Plugin
+	loggingPlugins         *[]Plugin
+	refusedCodeInResponses bool
 }
 
 type PluginsReturnCode int
@@ -38,6 +39,7 @@ const (
 	PluginsReturnCodeNXDomain
 	PluginsReturnCodeResponseError
 	PluginsReturnCodeServerError
+	PluginsReturnCodeCloak
 )
 
 var PluginsReturnCodeToString = map[PluginsReturnCode]string{
@@ -50,6 +52,7 @@ var PluginsReturnCodeToString = map[PluginsReturnCode]string{
 	PluginsReturnCodeNXDomain:      "NXDOMAIN",
 	PluginsReturnCodeResponseError: "RESPONSE_ERROR",
 	PluginsReturnCodeServerError:   "SERVER_ERROR",
+	PluginsReturnCodeCloak:         "CLOAK",
 }
 
 type PluginsState struct {
@@ -127,6 +130,7 @@ func InitPluginsGlobals(pluginsGlobals *PluginsGlobals, proxy *Proxy) error {
 	(*pluginsGlobals).queryPlugins = queryPlugins
 	(*pluginsGlobals).responsePlugins = responsePlugins
 	(*pluginsGlobals).loggingPlugins = loggingPlugins
+	(*pluginsGlobals).refusedCodeInResponses = proxy.refusedCodeInResponses
 	return nil
 }
 
@@ -175,8 +179,8 @@ func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGloba
 			return packet, ret
 		}
 		if pluginsState.action == PluginsActionReject {
-			// synth, err := RefusedResponseFromMessage(&msg)
-			synth, err := NameErrorResponseFromMessage(&msg)
+			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
+			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
 			if err != nil {
 				return nil, err
 			}
@@ -224,8 +228,8 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 			return packet, ret
 		}
 		if pluginsState.action == PluginsActionReject {
-			// synth, err := RefusedResponseFromMessage(&msg)
-			synth, err := NameErrorResponseFromMessage(&msg)
+			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
+			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
 			if err != nil {
 				return nil, err
 			}

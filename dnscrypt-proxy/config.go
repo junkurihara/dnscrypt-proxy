@@ -25,6 +25,7 @@ type Config struct {
 	LogFile                  *string  `toml:"log_file"`
 	UseSyslog                bool     `toml:"use_syslog"`
 	ServerNames              []string `toml:"server_names"`
+	DisabledServerNames      []string `toml:"disabled_server_names"`
 	ListenAddresses          []string `toml:"listen_addresses"`
 	Daemonize                bool
 	UserName                 string `toml:"user_name"`
@@ -73,6 +74,7 @@ type Config struct {
 	NetprobeTimeout          int                        `toml:"netprobe_timeout"`
 	OfflineMode              bool                       `toml:"offline_mode"`
 	HTTPProxyURL             string                     `toml:"http_proxy"`
+	RefusedCodeInResponses   bool                       `toml:"refused_code_in_responses"`
 }
 
 func newConfig() Config {
@@ -108,6 +110,7 @@ func newConfig() Config {
 		NetprobeAddress:          "9.9.9.9:53",
 		NetprobeTimeout:          60,
 		OfflineMode:              false,
+		RefusedCodeInResponses:   false,
 	}
 }
 
@@ -278,6 +281,7 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 
 	proxy.xTransport.rebuildTransport()
 
+	proxy.refusedCodeInResponses = config.RefusedCodeInResponses
 	proxy.timeout = time.Duration(config.Timeout) * time.Millisecond
 	proxy.maxClients = config.MaxClients
 	proxy.mainProto = "udp"
@@ -396,6 +400,7 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 
 	if *listAll {
 		config.ServerNames = nil
+		config.DisabledServerNames = nil
 		config.SourceRequireDNSSEC = false
 		config.SourceRequireNoFilter = false
 		config.SourceRequireNoLog = false
@@ -547,6 +552,9 @@ func (config *Config) loadSource(proxy *Proxy, requiredProps stamps.ServerInform
 				continue
 			}
 		} else if registeredServer.stamp.Props&requiredProps != requiredProps {
+			continue
+		}
+		if includesName(config.DisabledServerNames, registeredServer.name) {
 			continue
 		}
 		if config.SourceIPv4 || config.SourceIPv6 {
