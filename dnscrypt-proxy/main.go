@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	AppVersion            = "2.0.20"
+	AppVersion            = "2.0.21"
 	DefaultConfigFileName = "dnscrypt-proxy.toml"
 )
 
@@ -35,9 +35,6 @@ func main() {
 		DisplayName:      "DNSCrypt client proxy",
 		Description:      "Encrypted/authenticated DNS proxy",
 		WorkingDirectory: pwd,
-	}
-	if serviceUserName := serviceStartupUserName(); serviceUserName != nil {
-		svcConfig.UserName = *serviceUserName
 	}
 	svcFlag := flag.String("service", "", fmt.Sprintf("Control the system service: %q", service.ControlAction))
 	app := &App{}
