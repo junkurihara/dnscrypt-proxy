@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +18,11 @@ import (
 	"github.com/jedisct1/dlog"
 	stamps "github.com/jedisct1/go-dnsstamps"
 	netproxy "golang.org/x/net/proxy"
+)
+
+const (
+	MaxTimeout             = 3600
+	DefaultNetprobeAddress = "9.9.9.9:53"
 )
 
 type Config struct {
@@ -37,6 +42,7 @@ type Config struct {
 	CertIgnoreTimestamp      bool   `toml:"cert_ignore_timestamp"`
 	EphemeralKeys            bool   `toml:"dnscrypt_ephemeral_keys"`
 	LBStrategy               string `toml:"lb_strategy"`
+	LBEstimator              bool   `toml:"lb_estimator"`
 	BlockIPv6                bool   `toml:"block_ipv6"`
 	Cache                    bool
 	CacheSize                int                        `toml:"cache_size"`
@@ -107,10 +113,10 @@ func newConfig() Config {
 		LogMaxBackups:            1,
 		TLSDisableSessionTickets: false,
 		TLSCipherSuite:           nil,
-		NetprobeAddress:          "9.9.9.9:53",
 		NetprobeTimeout:          60,
 		OfflineMode:              false,
 		RefusedCodeInResponses:   false,
+		LBEstimator:              true,
 	}
 }
 
@@ -306,13 +312,15 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	case "ph":
 		lbStrategy = LBStrategyPH
 	case "fastest":
-		lbStrategy = LBStrategyFastest
+	case "first":
+		lbStrategy = LBStrategyFirst
 	case "random":
 		lbStrategy = LBStrategyRandom
 	default:
 		dlog.Warnf("Unknown load balancing strategy: [%s]", config.LBStrategy)
 	}
 	proxy.serversInfo.lbStrategy = lbStrategy
+	proxy.serversInfo.lbEstimator = config.LBEstimator
 
 	proxy.listenAddresses = config.ListenAddresses
 	proxy.daemonize = config.Daemonize
@@ -417,7 +425,13 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 			netprobeTimeout = *netprobeTimeoutOverride
 		}
 	})
-	netProbe(config.NetprobeAddress, netprobeTimeout)
+	netprobeAddress := DefaultNetprobeAddress
+	if len(config.NetprobeAddress) > 0 {
+		netprobeAddress = config.NetprobeAddress
+	} else if len(config.FallbackResolver) > 0 {
+		netprobeAddress = config.FallbackResolver
+	}
+	NetProbe(netprobeAddress, netprobeTimeout)
 	if !config.OfflineMode {
 		if err := config.loadSources(proxy); err != nil {
 			return err
@@ -513,6 +527,10 @@ func (config *Config) loadSources(proxy *Proxy) error {
 		}
 		proxy.registeredServers = append(proxy.registeredServers, RegisteredServer{name: serverName, stamp: stamp})
 	}
+	rand.Shuffle(len(proxy.registeredServers), func(i, j int) {
+		proxy.registeredServers[i], proxy.registeredServers[j] = proxy.registeredServers[j], proxy.registeredServers[i]
+	})
+
 	return nil
 }
 
@@ -539,13 +557,13 @@ func (config *Config) loadSource(proxy *Proxy, requiredProps stamps.ServerInform
 	source, sourceUrlsToPrefetch, err := NewSource(proxy.xTransport, cfgSource.URLs, cfgSource.MinisignKeyStr, cfgSource.CacheFile, cfgSource.FormatStr, time.Duration(cfgSource.RefreshDelay)*time.Hour)
 	proxy.urlsToPrefetch = append(proxy.urlsToPrefetch, sourceUrlsToPrefetch...)
 	if err != nil {
-		dlog.Criticalf("Unable to use source [%s]: [%s]", cfgSourceName, err)
-		return nil
+		dlog.Criticalf("Unable to retrieve source [%s]: [%s]", cfgSourceName, err)
+		return err
 	}
 	registeredServers, err := source.Parse(cfgSource.Prefix)
 	if err != nil {
 		dlog.Criticalf("Unable to use source [%s]: [%s]", cfgSourceName, err)
-		return nil
+		return err
 	}
 	for _, registeredServer := range registeredServers {
 		if len(config.ServerNames) > 0 {
@@ -600,35 +618,4 @@ func cdLocal() {
 		return
 	}
 	os.Chdir(filepath.Dir(exeFileName))
-}
-
-func netProbe(address string, timeout int) error {
-	if len(address) <= 0 || timeout <= 0 {
-		return nil
-	}
-	remoteUDPAddr, err := net.ResolveUDPAddr("udp", address)
-	if err != nil {
-		return err
-	}
-	retried := false
-	for tries := timeout; tries > 0; tries-- {
-		pc, err := net.DialUDP("udp", nil, remoteUDPAddr)
-		if err != nil {
-			if !retried {
-				retried = true
-				dlog.Notice("Network not available yet -- waiting...")
-			}
-			dlog.Debug(err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-		pc.Close()
-		if retried {
-			dlog.Notice("Network connectivity detected")
-		}
-		return nil
-	}
-	es := "Timeout while waiting for network connectivity"
-	dlog.Error(es)
-	return errors.New(es)
 }
