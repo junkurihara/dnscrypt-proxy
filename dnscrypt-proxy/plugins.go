@@ -297,7 +297,7 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 		if pluginsState.action == PluginsActionReject {
 			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
 			// synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
-			synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
+			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
 			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
 			if err != nil {
 				return nil, err
