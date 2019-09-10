@@ -295,12 +295,10 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 			return packet, ret
 		}
 		if pluginsState.action == PluginsActionReject {
-<<<<<<< HEAD
 			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
-			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
-=======
+			// synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
 			synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
->>>>>>> 2.0.27
+			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
 			if err != nil {
 				return nil, err
 			}
