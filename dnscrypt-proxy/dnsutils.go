@@ -123,30 +123,6 @@ func NameErrorResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP
 	}
 	return dstMsg, nil
 }
-// func NameErrorResponseFromMessage(srcMsg *dns.Msg, refusedCode bool) (*dns.Msg, error) {
-// 	dstMsg, err := EmptyResponseFromMessage(srcMsg)
-// 	if err != nil {
-// 		return dstMsg, err
-// 	}
-// 	// from 2.0.20
-// 	if refusedCode {
-// 		dstMsg.Rcode = dns.RcodeRefused
-// 	} else {
-// 		dstMsg.Rcode = dns.RcodeNameError
-// 		questions := srcMsg.Question
-// 		if len(questions) > 0 {
-// 			hinfo := new(dns.HINFO)
-// 			hinfo.Hdr = dns.RR_Header{Name: questions[0].Name, Rrtype: dns.TypeHINFO,
-// 				Class: dns.ClassINET, Ttl: 1}
-// 			hinfo.Cpu = "This query has been locally blocked"
-// 			hinfo.Os = "by dnscrypt-proxy"
-//			dstMsg.Answer = []dns.RR{hinfo}
-//		}
-//	}
-//	//
-//	// dstMsg.Rcode = dns.RcodeNameError
-// 	return dstMsg, nil
-// }
 
 func HasTCFlag(packet []byte) bool {
 	return packet[2]&2 == 2
