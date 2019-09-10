@@ -81,6 +81,8 @@ type Config struct {
 	OfflineMode              bool                       `toml:"offline_mode"`
 	HTTPProxyURL             string                     `toml:"http_proxy"`
 	RefusedCodeInResponses   bool                       `toml:"refused_code_in_responses"`
+	BlockedQueryResponse     string                     `toml:"blocked_query_response"`
+	QueryMeta                []string                   `toml:"query_meta"`
 }
 
 func newConfig() Config {
@@ -117,6 +119,7 @@ func newConfig() Config {
 		OfflineMode:              false,
 		RefusedCodeInResponses:   false,
 		LBEstimator:              true,
+		BlockedQueryResponse:     "hinfo",
 	}
 }
 
@@ -202,6 +205,7 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	configFile := flag.String("config", DefaultConfigFileName, "Path to the configuration file")
 	child := flag.Bool("child", false, "Invokes program as a child process")
 	netprobeTimeoutOverride := flag.Int("netprobe-timeout", 60, "Override the netprobe timeout")
+	showCerts := flag.Bool("show-certs", false, "print DoH certificate chain hashes")
 
 	flag.Parse()
 
@@ -259,6 +263,7 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	proxy.xTransport.tlsDisableSessionTickets = config.TLSDisableSessionTickets
 	proxy.xTransport.tlsCipherSuite = config.TLSCipherSuite
 	proxy.xTransport.fallbackResolver = config.FallbackResolver
+	proxy.xTransport.mainProto = proxy.mainProto
 	if len(config.FallbackResolver) > 0 {
 		proxy.xTransport.ignoreSystemDNS = config.IgnoreSystemDNS
 	}
@@ -288,7 +293,15 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 
 	proxy.xTransport.rebuildTransport()
 
-	proxy.refusedCodeInResponses = config.RefusedCodeInResponses
+	if md.IsDefined("refused_code_in_responses") {
+		dlog.Notice("config option `refused_code_in_responses` is deprecated, use `blocked_query_response`")
+		if config.RefusedCodeInResponses {
+			config.BlockedQueryResponse = "refused"
+		} else {
+			config.BlockedQueryResponse = "hinfo"
+		}
+	}
+	proxy.blockedQueryResponse = config.BlockedQueryResponse
 	proxy.timeout = time.Duration(config.Timeout) * time.Millisecond
 	proxy.maxClients = config.MaxClients
 	proxy.mainProto = "udp"
@@ -338,6 +351,8 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 
 	proxy.cacheMinTTL = config.CacheMinTTL
 	proxy.cacheMaxTTL = config.CacheMaxTTL
+
+	proxy.queryMeta = config.QueryMeta
 
 	if len(config.QueryLog.Format) == 0 {
 		config.QueryLog.Format = "tsv"
@@ -431,7 +446,17 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	} else if len(config.FallbackResolver) > 0 {
 		netprobeAddress = config.FallbackResolver
 	}
+	proxy.showCerts = *showCerts || len(os.Getenv("SHOW_CERTS")) > 0
+	if len(os.Getenv("SHOW_CERTS")) > 0 {
+		proxy.showCerts = true
+	}
+
+	if proxy.showCerts {
+		proxy.listenAddresses = nil
+	}
+	dlog.Noticef("dnscrypt-proxy %s", AppVersion)
 	NetProbe(netprobeAddress, netprobeTimeout)
+
 	if !config.OfflineMode {
 		if err := config.loadSources(proxy); err != nil {
 			return err
@@ -523,7 +548,7 @@ func (config *Config) loadSources(proxy *Proxy) error {
 		}
 		stamp, err := stamps.NewServerStampFromString(staticConfig.Stamp)
 		if err != nil {
-			return err
+			dlog.Fatalf("Stamp error for the static [%s] definition: [%v]", serverName, err)
 		}
 		proxy.registeredServers = append(proxy.registeredServers, RegisteredServer{name: serverName, stamp: stamp})
 	}

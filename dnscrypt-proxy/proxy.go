@@ -63,7 +63,9 @@ type Proxy struct {
 	logMaxSize                   int
 	logMaxAge                    int
 	logMaxBackups                int
-	refusedCodeInResponses       bool
+	blockedQueryResponse         string
+	queryMeta                    []string
+	showCerts                    bool
 }
 
 func (proxy *Proxy) StartProxy() {
@@ -152,6 +154,9 @@ func (proxy *Proxy) StartProxy() {
 		dlog.Fatal(err)
 	}
 	liveServers, err := proxy.serversInfo.refresh(proxy)
+	if proxy.showCerts {
+		os.Exit(0)
+	}
 	if liveServers > 0 {
 		dlog.Noticef("dnscrypt-proxy is ready - live servers: %d", liveServers)
 		if !proxy.child {
