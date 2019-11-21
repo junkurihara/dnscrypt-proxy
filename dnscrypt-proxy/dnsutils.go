@@ -23,20 +23,17 @@ func TruncatedResponse(packet []byte) ([]byte, error) {
 	return dstMsg.Pack()
 }
 
-func EmptyResponseFromMessage(srcMsg *dns.Msg) (*dns.Msg, error) {
+func EmptyResponseFromMessage(srcMsg *dns.Msg) *dns.Msg {
 	dstMsg := srcMsg
 	dstMsg.Response = true
 	dstMsg.Answer = make([]dns.RR, 0)
 	dstMsg.Ns = make([]dns.RR, 0)
 	dstMsg.Extra = make([]dns.RR, 0)
-	return dstMsg, nil
+	return dstMsg
 }
 
-func RefusedResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP, ipv6 net.IP, ttl uint32) (*dns.Msg, error) {
-	dstMsg, err := EmptyResponseFromMessage(srcMsg)
-	if err != nil {
-		return dstMsg, err
-	}
+func RefusedResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP, ipv6 net.IP, ttl uint32) *dns.Msg {
+	dstMsg := EmptyResponseFromMessage(srcMsg)
 	if refusedCode {
 		dstMsg.Rcode = dns.RcodeRefused
 	} else {
@@ -74,16 +71,13 @@ func RefusedResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP, 
 			}
 		}
 	}
-	return dstMsg, nil
+	return dstMsg
 }
 
 // This function returns RcodeNameError instead of RcodeSuccess
 // in a case where the query is filtered by blacklist.
-func NameErrorResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP, ipv6 net.IP, ttl uint32) (*dns.Msg, error) {
-	dstMsg, err := EmptyResponseFromMessage(srcMsg)
-	if err != nil {
-		return dstMsg, err
-	}
+func NameErrorResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP, ipv6 net.IP, ttl uint32) *dns.Msg {
+	dstMsg := EmptyResponseFromMessage(srcMsg)
 	if refusedCode {
 		dstMsg.Rcode = dns.RcodeRefused
 	} else {
@@ -121,7 +115,7 @@ func NameErrorResponseFromMessage(srcMsg *dns.Msg, refusedCode bool, ipv4 net.IP
 			}
 		}
 	}
-	return dstMsg, nil
+	return dstMsg
 }
 
 func HasTCFlag(packet []byte) bool {
@@ -213,8 +207,11 @@ func setMaxTTL(msg *dns.Msg, ttl uint32) {
 }
 
 func updateTTL(msg *dns.Msg, expiration time.Time) {
-	ttl := uint32(time.Until(expiration) / time.Second)
-
+	until := time.Until(expiration)
+	ttl := uint32(0)
+	if until > 0 {
+		ttl = uint32(until / time.Second)
+	}
 	for _, rr := range msg.Answer {
 		rr.Header().Ttl = ttl
 	}
@@ -222,10 +219,8 @@ func updateTTL(msg *dns.Msg, expiration time.Time) {
 		rr.Header().Ttl = ttl
 	}
 	for _, rr := range msg.Extra {
-		header := rr.Header()
-		if header.Rrtype == dns.TypeOPT {
-			continue
+		if rr.Header().Rrtype != dns.TypeOPT {
+			rr.Header().Ttl = ttl
 		}
-		rr.Header().Ttl = ttl
 	}
 }

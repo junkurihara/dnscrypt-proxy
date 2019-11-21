@@ -42,8 +42,10 @@ const (
 	PluginsReturnCodeParseError
 	PluginsReturnCodeNXDomain
 	PluginsReturnCodeResponseError
-	PluginsReturnCodeServerError
+	PluginsReturnCodeServFail
+	PluginsReturnCodeNetworkError
 	PluginsReturnCodeCloak
+	PluginsReturnCodeServerTimeout
 )
 
 var PluginsReturnCodeToString = map[PluginsReturnCode]string{
@@ -55,33 +57,37 @@ var PluginsReturnCodeToString = map[PluginsReturnCode]string{
 	PluginsReturnCodeParseError:    "PARSE_ERROR",
 	PluginsReturnCodeNXDomain:      "NXDOMAIN",
 	PluginsReturnCodeResponseError: "RESPONSE_ERROR",
-	PluginsReturnCodeServerError:   "SERVER_ERROR",
+	PluginsReturnCodeServFail:      "SERVFAIL",
+	PluginsReturnCodeNetworkError:  "NETWORK_ERROR",
 	PluginsReturnCodeCloak:         "CLOAK",
+	PluginsReturnCodeServerTimeout: "SERVER_TIMEOUT",
 }
 
 type PluginsState struct {
-	sessionData            map[string]interface{}
-	action                 PluginsAction
-	originalMaxPayloadSize int
-	maxPayloadSize         int
-	clientProto            string
-	clientAddr             *net.Addr
-	synthResponse          *dns.Msg
-	dnssec                 bool
-	cacheSize              int
-	cacheNegMinTTL         uint32
-	cacheNegMaxTTL         uint32
-	cacheMinTTL            uint32
-	cacheMaxTTL            uint32
-	questionMsg            *dns.Msg
-	requestStart           time.Time
-	requestEnd             time.Time
-	cacheHit               bool
-	returnCode             PluginsReturnCode
-	serverName             string
+	sessionData                      map[string]interface{}
+	action                           PluginsAction
+	maxUnencryptedUDPSafePayloadSize int
+	originalMaxPayloadSize           int
+	maxPayloadSize                   int
+	clientProto                      string
+	clientAddr                       *net.Addr
+	synthResponse                    *dns.Msg
+	dnssec                           bool
+	cacheSize                        int
+	cacheNegMinTTL                   uint32
+	cacheNegMaxTTL                   uint32
+	cacheMinTTL                      uint32
+	cacheMaxTTL                      uint32
+	rejectTTL                        uint32
+	questionMsg                      *dns.Msg
+	requestStart                     time.Time
+	requestEnd                       time.Time
+	cacheHit                         bool
+	returnCode                       PluginsReturnCode
+	serverName                       string
 }
 
-func InitPluginsGlobals(pluginsGlobals *PluginsGlobals, proxy *Proxy) error {
+func (proxy *Proxy) InitPluginsGlobals() error {
 	queryPlugins := &[]Plugin{}
 
 	if len(proxy.queryMeta) != 0 {
@@ -142,21 +148,21 @@ func InitPluginsGlobals(pluginsGlobals *PluginsGlobals, proxy *Proxy) error {
 		}
 	}
 
-	(*pluginsGlobals).queryPlugins = queryPlugins
-	(*pluginsGlobals).responsePlugins = responsePlugins
-	(*pluginsGlobals).loggingPlugins = loggingPlugins
+	proxy.pluginsGlobals.queryPlugins = queryPlugins
+	proxy.pluginsGlobals.responsePlugins = responsePlugins
+	proxy.pluginsGlobals.loggingPlugins = loggingPlugins
 
-	parseBlockedQueryResponse(proxy.blockedQueryResponse, pluginsGlobals)
+	parseBlockedQueryResponse(proxy.blockedQueryResponse, &proxy.pluginsGlobals)
 
 	return nil
 }
 
 // blockedQueryResponse can be 'refused', 'hinfo' or IP responses 'a:IPv4,aaaa:IPv6
-func parseBlockedQueryResponse(bockedResponse string, pluginsGlobals *PluginsGlobals) {
-	bockedResponse = strings.ReplaceAll(strings.ToLower(bockedResponse), " ", "")
+func parseBlockedQueryResponse(blockedResponse string, pluginsGlobals *PluginsGlobals) {
+	blockedResponse = StringStripSpaces(strings.ToLower(blockedResponse))
 
-	if strings.HasPrefix(bockedResponse, "a:") {
-		blockedIPStrings := strings.Split(bockedResponse, ",")
+	if strings.HasPrefix(blockedResponse, "a:") {
+		blockedIPStrings := strings.Split(blockedResponse, ",")
 		(*pluginsGlobals).respondWithIPv4 = net.ParseIP(strings.TrimPrefix(blockedIPStrings[0], "a:"))
 
 		if (*pluginsGlobals).respondWithIPv4 == nil {
@@ -186,13 +192,13 @@ func parseBlockedQueryResponse(bockedResponse string, pluginsGlobals *PluginsGlo
 		}
 
 	} else {
-		switch bockedResponse {
+		switch blockedResponse {
 		case "refused":
 			(*pluginsGlobals).refusedCodeInResponses = true
 		case "hinfo":
 			(*pluginsGlobals).refusedCodeInResponses = false
 		default:
-			dlog.Noticef("Invalid blocked_query_response option [%s], defaulting to `hinfo`", bockedResponse)
+			dlog.Noticef("Invalid blocked_query_response option [%s], defaulting to `hinfo`", blockedResponse)
 			(*pluginsGlobals).refusedCodeInResponses = false
 		}
 	}
@@ -209,17 +215,19 @@ type Plugin interface {
 
 func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, start time.Time) PluginsState {
 	return PluginsState{
-		action:         PluginsActionForward,
-		maxPayloadSize: MaxDNSUDPPacketSize - ResponseOverhead,
-		clientProto:    clientProto,
-		clientAddr:     clientAddr,
-		cacheSize:      proxy.cacheSize,
-		cacheNegMinTTL: proxy.cacheNegMinTTL,
-		cacheNegMaxTTL: proxy.cacheNegMaxTTL,
-		cacheMinTTL:    proxy.cacheMinTTL,
-		cacheMaxTTL:    proxy.cacheMaxTTL,
-		questionMsg:    nil,
-		requestStart:   start,
+		action:                           PluginsActionForward,
+		maxPayloadSize:                   MaxDNSUDPPacketSize - ResponseOverhead,
+		clientProto:                      clientProto,
+		clientAddr:                       clientAddr,
+		cacheSize:                        proxy.cacheSize,
+		cacheNegMinTTL:                   proxy.cacheNegMinTTL,
+		cacheNegMaxTTL:                   proxy.cacheNegMaxTTL,
+		cacheMinTTL:                      proxy.cacheMinTTL,
+		cacheMaxTTL:                      proxy.cacheMaxTTL,
+		rejectTTL:                        proxy.rejectTTL,
+		questionMsg:                      nil,
+		requestStart:                     start,
+		maxUnencryptedUDPSafePayloadSize: MaxDNSUDPSafePacketSize,
 	}
 }
 
@@ -238,26 +246,21 @@ func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGloba
 	}
 	pluginsState.questionMsg = &msg
 	pluginsGlobals.RLock()
+	defer pluginsGlobals.RUnlock()
 	for _, plugin := range *pluginsGlobals.queryPlugins {
-		if ret := plugin.Eval(pluginsState, &msg); ret != nil {
-			pluginsGlobals.RUnlock()
+		if err := plugin.Eval(pluginsState, &msg); err != nil {
 			pluginsState.action = PluginsActionDrop
-			return packet, ret
+			return packet, err
 		}
 		if pluginsState.action == PluginsActionReject {
-			// synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
-			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
-			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
-			if err != nil {
-				return nil, err
-			}
+		        // synth := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
+			synth := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
 			pluginsState.synthResponse = synth
 		}
 		if pluginsState.action != PluginsActionForward {
 			break
 		}
 	}
-	pluginsGlobals.RUnlock()
 	packet2, err := msg.PackBuffer(packet)
 	if err != nil {
 		return packet, err
@@ -270,7 +273,7 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 		return packet, nil
 	}
 	pluginsState.action = PluginsActionForward
-	msg := dns.Msg{}
+	msg := dns.Msg{Compress: true}
 	if err := msg.Unpack(packet); err != nil {
 		if len(packet) >= MinDNSPacketSize && HasTCFlag(packet) {
 			err = nil
@@ -283,25 +286,20 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 	case dns.RcodeNameError:
 		pluginsState.returnCode = PluginsReturnCodeNXDomain
 	case dns.RcodeServerFailure:
-		pluginsState.returnCode = PluginsReturnCodeServerError
+		pluginsState.returnCode = PluginsReturnCodeServFail
 	default:
 		pluginsState.returnCode = PluginsReturnCodeResponseError
 	}
 	pluginsGlobals.RLock()
+	defer pluginsGlobals.RUnlock()
 	for _, plugin := range *pluginsGlobals.responsePlugins {
-		if ret := plugin.Eval(pluginsState, &msg); ret != nil {
-			pluginsGlobals.RUnlock()
+		if err := plugin.Eval(pluginsState, &msg); err != nil {
 			pluginsState.action = PluginsActionDrop
-			return packet, ret
+			return packet, err
 		}
 		if pluginsState.action == PluginsActionReject {
-			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
-			// synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses)
-			// synth, err := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
-			synth, err := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.cacheMinTTL)
-			if err != nil {
-				return nil, err
-			}
+			// synth := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
+			synth := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
 			dlog.Infof("Blocking [%s]", synth.Question[0].Name)
 			pluginsState.synthResponse = synth
 		}
@@ -309,7 +307,6 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 			break
 		}
 	}
-	pluginsGlobals.RUnlock()
 	if ttl != nil {
 		setMaxTTL(&msg, *ttl)
 	}
@@ -330,12 +327,11 @@ func (pluginsState *PluginsState) ApplyLoggingPlugins(pluginsGlobals *PluginsGlo
 		return errors.New("Unexpected number of questions")
 	}
 	pluginsGlobals.RLock()
+	defer pluginsGlobals.RUnlock()
 	for _, plugin := range *pluginsGlobals.loggingPlugins {
-		if ret := plugin.Eval(pluginsState, questionMsg); ret != nil {
-			pluginsGlobals.RUnlock()
-			return ret
+		if err := plugin.Eval(pluginsState, questionMsg); err != nil {
+			return err
 		}
 	}
-	pluginsGlobals.RUnlock()
 	return nil
 }
