@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	AppVersion            = "2.0.33"
+	AppVersion            = "2.0.36"
 	DefaultConfigFileName = "dnscrypt-proxy.toml"
 )
 
@@ -28,7 +28,6 @@ type App struct {
 
 func main() {
 	dlog.Init("dnscrypt-proxy", dlog.SeverityNotice, "DAEMON")
-	os.Setenv("GODEBUG", os.Getenv("GODEBUG")+",tls13=1")
 
 	seed := make([]byte, 8)
 	crypto_rand.Read(seed)
@@ -50,7 +49,7 @@ func main() {
 	flags := ConfigFlags{}
 	flags.List = flag.Bool("list", false, "print the list of available resolvers for the enabled filters")
 	flags.ListAll = flag.Bool("list-all", false, "print the complete list of available resolvers, ignoring filters")
-	flags.JsonOutput = flag.Bool("json", false, "output list as JSON")
+	flags.JSONOutput = flag.Bool("json", false, "output list as JSON")
 	flags.Check = flag.Bool("check", false, "check the configuration file and exit")
 	flags.ConfigFile = flag.String("config", DefaultConfigFileName, "Path to the configuration file")
 	flags.Child = flag.Bool("child", false, "Invokes program as a child process")
@@ -127,7 +126,7 @@ func (app *App) AppMain() {
 	}
 	app.quit = make(chan struct{})
 	app.wg.Add(1)
-	pidfile.Write()
+	_ = pidfile.Write()
 	app.proxy.StartProxy()
 	<-app.quit
 	dlog.Notice("Quit signal received...")

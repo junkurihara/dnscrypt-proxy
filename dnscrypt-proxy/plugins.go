@@ -14,11 +14,11 @@ import (
 type PluginsAction int
 
 const (
-	PluginsActionNone    = 0
-	PluginsActionForward = 1
-	PluginsActionDrop    = 2
-	PluginsActionReject  = 3
-	PluginsActionSynth   = 4
+	PluginsActionNone     = 0
+	PluginsActionContinue = 1
+	PluginsActionDrop     = 2
+	PluginsActionReject   = 3
+	PluginsActionSynth    = 4
 )
 
 type PluginsGlobals struct {
@@ -80,6 +80,7 @@ type PluginsState struct {
 	cacheMaxTTL                      uint32
 	rejectTTL                        uint32
 	questionMsg                      *dns.Msg
+	qName                            string
 	requestStart                     time.Time
 	requestEnd                       time.Time
 	cacheHit                         bool
@@ -115,10 +116,19 @@ func (proxy *Proxy) InitPluginsGlobals() error {
 	if len(proxy.forwardFile) != 0 {
 		*queryPlugins = append(*queryPlugins, Plugin(new(PluginForward)))
 	}
+	if proxy.pluginBlockUnqualified {
+		*queryPlugins = append(*queryPlugins, Plugin(new(PluginBlockUnqualified)))
+	}
+	if proxy.pluginBlockUndelegated {
+		*queryPlugins = append(*queryPlugins, Plugin(new(PluginBlockUndelegated)))
+	}
 
 	responsePlugins := &[]Plugin{}
 	if len(proxy.nxLogFile) != 0 {
 		*responsePlugins = append(*responsePlugins, Plugin(new(PluginNxLog)))
+	}
+	if len(proxy.blockNameFile) != 0 {
+		*responsePlugins = append(*responsePlugins, Plugin(new(PluginBlockNameResponse)))
 	}
 	if len(proxy.blockIPFile) != 0 {
 		*responsePlugins = append(*responsePlugins, Plugin(new(PluginBlockIP)))
@@ -215,7 +225,8 @@ type Plugin interface {
 
 func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, start time.Time) PluginsState {
 	return PluginsState{
-		action:                           PluginsActionForward,
+		action:                           PluginsActionContinue,
+		returnCode:                       PluginsReturnCodePass,
 		maxPayloadSize:                   MaxDNSUDPPacketSize - ResponseOverhead,
 		clientProto:                      clientProto,
 		clientAddr:                       clientAddr,
@@ -226,25 +237,30 @@ func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, sta
 		cacheMaxTTL:                      proxy.cacheMaxTTL,
 		rejectTTL:                        proxy.rejectTTL,
 		questionMsg:                      nil,
+		qName:                            "",
 		requestStart:                     start,
 		maxUnencryptedUDPSafePayloadSize: MaxDNSUDPSafePacketSize,
 	}
 }
 
 func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGlobals, packet []byte, serverName string) ([]byte, error) {
-	if len(*pluginsGlobals.queryPlugins) == 0 && len(*pluginsGlobals.loggingPlugins) == 0 {
-		return packet, nil
-	}
 	pluginsState.serverName = serverName
-	pluginsState.action = PluginsActionForward
 	msg := dns.Msg{}
 	if err := msg.Unpack(packet); err != nil {
 		return packet, err
 	}
-	if len(msg.Question) > 1 {
+	if len(msg.Question) != 1 {
 		return packet, errors.New("Unexpected number of questions")
 	}
+	qName, err := NormalizeQName(msg.Question[0].Name)
+	if err != nil {
+		return packet, err
+	}
+	pluginsState.qName = qName
 	pluginsState.questionMsg = &msg
+	if len(*pluginsGlobals.queryPlugins) == 0 && len(*pluginsGlobals.loggingPlugins) == 0 {
+		return packet, nil
+	}
 	pluginsGlobals.RLock()
 	defer pluginsGlobals.RUnlock()
 	for _, plugin := range *pluginsGlobals.queryPlugins {
@@ -257,7 +273,7 @@ func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGloba
 			synth := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
 			pluginsState.synthResponse = synth
 		}
-		if pluginsState.action != PluginsActionForward {
+		if pluginsState.action != PluginsActionContinue {
 			break
 		}
 	}
@@ -272,7 +288,6 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 	if len(*pluginsGlobals.responsePlugins) == 0 && len(*pluginsGlobals.loggingPlugins) == 0 {
 		return packet, nil
 	}
-	pluginsState.action = PluginsActionForward
 	msg := dns.Msg{Compress: true}
 	if err := msg.Unpack(packet); err != nil {
 		if len(packet) >= MinDNSPacketSize && HasTCFlag(packet) {
@@ -300,10 +315,9 @@ func (pluginsState *PluginsState) ApplyResponsePlugins(pluginsGlobals *PluginsGl
 		if pluginsState.action == PluginsActionReject {
 			// synth := RefusedResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
 			synth := NameErrorResponseFromMessage(&msg, pluginsGlobals.refusedCodeInResponses, pluginsGlobals.respondWithIPv4, pluginsGlobals.respondWithIPv6, pluginsState.rejectTTL)
-			dlog.Infof("Blocking [%s]", synth.Question[0].Name)
 			pluginsState.synthResponse = synth
 		}
-		if pluginsState.action != PluginsActionForward {
+		if pluginsState.action != PluginsActionContinue {
 			break
 		}
 	}
@@ -323,8 +337,8 @@ func (pluginsState *PluginsState) ApplyLoggingPlugins(pluginsGlobals *PluginsGlo
 	}
 	pluginsState.requestEnd = time.Now()
 	questionMsg := pluginsState.questionMsg
-	if questionMsg == nil || len(questionMsg.Question) > 1 {
-		return errors.New("Unexpected number of questions")
+	if questionMsg == nil {
+		return errors.New("Question not found")
 	}
 	pluginsGlobals.RLock()
 	defer pluginsGlobals.RUnlock()

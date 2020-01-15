@@ -20,88 +20,15 @@ type BlockedNames struct {
 	format          string
 }
 
-type PluginBlockName struct {
-	blockedNames *BlockedNames
-}
+const aliasesLimit = 8
 
-func (plugin *PluginBlockName) Name() string {
-	return "block_name"
-}
+var blockedNames *BlockedNames
 
-func (plugin *PluginBlockName) Description() string {
-	return "Block DNS queries matching name patterns"
-}
-
-func (plugin *PluginBlockName) Init(proxy *Proxy) error {
-	dlog.Noticef("Loading the set of blocking rules from [%s]", proxy.blockNameFile)
-	bin, err := ReadTextFile(proxy.blockNameFile)
-	if err != nil {
-		return err
-	}
-	blockedNames := BlockedNames{
-		allWeeklyRanges: proxy.allWeeklyRanges,
-		patternMatcher:  NewPatternPatcher(),
-	}
-	for lineNo, line := range strings.Split(string(bin), "\n") {
-		line = strings.TrimFunc(line, unicode.IsSpace)
-		if len(line) == 0 || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.Split(line, "@")
-		timeRangeName := ""
-		if len(parts) == 2 {
-			line = strings.TrimFunc(parts[0], unicode.IsSpace)
-			timeRangeName = strings.TrimFunc(parts[1], unicode.IsSpace)
-		} else if len(parts) > 2 {
-			dlog.Errorf("Syntax error in block rules at line %d -- Unexpected @ character", 1+lineNo)
-			continue
-		}
-		var weeklyRanges *WeeklyRanges
-		if len(timeRangeName) > 0 {
-			weeklyRangesX, ok := (*blockedNames.allWeeklyRanges)[timeRangeName]
-			if !ok {
-				dlog.Errorf("Time range [%s] not found at line %d", timeRangeName, 1+lineNo)
-			} else {
-				weeklyRanges = &weeklyRangesX
-			}
-		}
-		if err := blockedNames.patternMatcher.Add(line, weeklyRanges, lineNo+1); err != nil {
-			dlog.Error(err)
-			continue
-		}
-	}
-	plugin.blockedNames = &blockedNames
-	if len(proxy.blockNameLogFile) == 0 {
-		return nil
-	}
-	blockedNames.logger = &lumberjack.Logger{LocalTime: true, MaxSize: proxy.logMaxSize, MaxAge: proxy.logMaxAge, MaxBackups: proxy.logMaxBackups, Filename: proxy.blockNameLogFile, Compress: true}
-	blockedNames.format = proxy.blockNameFormat
-
-	return nil
-}
-
-func (plugin *PluginBlockName) Drop() error {
-	return nil
-}
-
-func (plugin *PluginBlockName) Reload() error {
-	return nil
-}
-
-func (plugin *PluginBlockName) Eval(pluginsState *PluginsState, msg *dns.Msg) error {
-	if plugin.blockedNames == nil || pluginsState.sessionData["whitelisted"] != nil {
-		return nil
-	}
-	questions := msg.Question
-	if len(questions) != 1 {
-		return nil
-	}
-	qName := strings.ToLower(StripTrailingDot(questions[0].Name))
-	return plugin.blockedNames.check(pluginsState, qName)
-}
-
-func (blockedNames *BlockedNames) check(pluginsState *PluginsState, qName string) error {
+func (blockedNames *BlockedNames) check(pluginsState *PluginsState, qName string, aliasFor *string) (bool, error) {
 	reject, reason, xweeklyRanges := blockedNames.patternMatcher.Eval(qName)
+	if aliasFor != nil {
+		reason = reason + " (alias for [" + *aliasFor + "])"
+	}
 	var weeklyRanges *WeeklyRanges
 	if xweeklyRanges != nil {
 		weeklyRanges = xweeklyRanges.(*WeeklyRanges)
@@ -112,7 +39,7 @@ func (blockedNames *BlockedNames) check(pluginsState *PluginsState, qName string
 		}
 	}
 	if !reject {
-		return nil
+		return false, nil
 	}
 	pluginsState.action = PluginsActionReject
 	pluginsState.returnCode = PluginsReturnCodeReject
@@ -136,9 +63,138 @@ func (blockedNames *BlockedNames) check(pluginsState *PluginsState, qName string
 			dlog.Fatalf("Unexpected log format: [%s]", blockedNames.format)
 		}
 		if blockedNames.logger == nil {
-			return errors.New("Log file not initialized")
+			return false, errors.New("Log file not initialized")
 		}
-		blockedNames.logger.Write([]byte(line))
+		_, _ = blockedNames.logger.Write([]byte(line))
+	}
+	return true, nil
+}
+
+// ---
+
+type PluginBlockName struct {
+}
+
+func (plugin *PluginBlockName) Name() string {
+	return "block_name"
+}
+
+func (plugin *PluginBlockName) Description() string {
+	return "Block DNS queries matching name patterns"
+}
+
+func (plugin *PluginBlockName) Init(proxy *Proxy) error {
+	dlog.Noticef("Loading the set of blocking rules from [%s]", proxy.blockNameFile)
+	bin, err := ReadTextFile(proxy.blockNameFile)
+	if err != nil {
+		return err
+	}
+	xBlockedNames := BlockedNames{
+		allWeeklyRanges: proxy.allWeeklyRanges,
+		patternMatcher:  NewPatternPatcher(),
+	}
+	for lineNo, line := range strings.Split(string(bin), "\n") {
+		line = strings.TrimFunc(line, unicode.IsSpace)
+		if len(line) == 0 || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "@")
+		timeRangeName := ""
+		if len(parts) == 2 {
+			line = strings.TrimFunc(parts[0], unicode.IsSpace)
+			timeRangeName = strings.TrimFunc(parts[1], unicode.IsSpace)
+		} else if len(parts) > 2 {
+			dlog.Errorf("Syntax error in block rules at line %d -- Unexpected @ character", 1+lineNo)
+			continue
+		}
+		var weeklyRanges *WeeklyRanges
+		if len(timeRangeName) > 0 {
+			weeklyRangesX, ok := (*xBlockedNames.allWeeklyRanges)[timeRangeName]
+			if !ok {
+				dlog.Errorf("Time range [%s] not found at line %d", timeRangeName, 1+lineNo)
+			} else {
+				weeklyRanges = &weeklyRangesX
+			}
+		}
+		if err := xBlockedNames.patternMatcher.Add(line, weeklyRanges, lineNo+1); err != nil {
+			dlog.Error(err)
+			continue
+		}
+	}
+	blockedNames = &xBlockedNames
+	if len(proxy.blockNameLogFile) == 0 {
+		return nil
+	}
+	blockedNames.logger = &lumberjack.Logger{LocalTime: true, MaxSize: proxy.logMaxSize, MaxAge: proxy.logMaxAge, MaxBackups: proxy.logMaxBackups, Filename: proxy.blockNameLogFile, Compress: true}
+	blockedNames.format = proxy.blockNameFormat
+
+	return nil
+}
+
+func (plugin *PluginBlockName) Drop() error {
+	return nil
+}
+
+func (plugin *PluginBlockName) Reload() error {
+	return nil
+}
+
+func (plugin *PluginBlockName) Eval(pluginsState *PluginsState, msg *dns.Msg) error {
+	if blockedNames == nil || pluginsState.sessionData["whitelisted"] != nil {
+		return nil
+	}
+	_, err := blockedNames.check(pluginsState, pluginsState.qName, nil)
+	return err
+}
+
+// ---
+
+type PluginBlockNameResponse struct {
+}
+
+func (plugin *PluginBlockNameResponse) Name() string {
+	return "block_name"
+}
+
+func (plugin *PluginBlockNameResponse) Description() string {
+	return "Block DNS responses matching name patterns"
+}
+
+func (plugin *PluginBlockNameResponse) Init(proxy *Proxy) error {
+	return nil
+}
+
+func (plugin *PluginBlockNameResponse) Drop() error {
+	return nil
+}
+
+func (plugin *PluginBlockNameResponse) Reload() error {
+	return nil
+}
+
+func (plugin *PluginBlockNameResponse) Eval(pluginsState *PluginsState, msg *dns.Msg) error {
+	if blockedNames == nil || pluginsState.sessionData["whitelisted"] != nil {
+		return nil
+	}
+	aliasFor := pluginsState.qName
+	aliasesLeft := aliasesLimit
+	answers := msg.Answer
+	for _, answer := range answers {
+		header := answer.Header()
+		if header.Class != dns.ClassINET || header.Rrtype != dns.TypeCNAME {
+			continue
+		}
+		target, err := NormalizeQName(answer.(*dns.CNAME).Target)
+		if err != nil {
+			return err
+		}
+		if blocked, err := blockedNames.check(pluginsState, target, &aliasFor); blocked || err != nil {
+			return err
+		}
+		aliasesLeft--
+		if aliasesLeft == 0 {
+			break
+		}
 	}
 	return nil
 }

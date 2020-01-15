@@ -31,8 +31,10 @@
 
 
 ## List of local addresses and ports to listen to. Can be IPv4 and/or IPv6.
+## Example with both IPv4 and IPv6:
+## listen_addresses = ['127.0.0.1:53', '[::1]:53']
 
-listen_addresses = ['127.0.0.1:53', '[::1]:53']
+listen_addresses = ['127.0.0.1:53']
 
 
 ## Maximum number of simultaneous client connections to accept
@@ -198,7 +200,7 @@ cert_refresh_delay = 240
 fallback_resolver = '9.9.9.9:53'
 
 
-## Always use the fallback resolver before the system DNS settings
+## Always use the fallback resolver before the system DNS settings.
 
 ignore_system_dns = true
 
@@ -256,13 +258,28 @@ log_files_max_backups = 1
 #        Filters        #
 #########################
 
+## Note: if you are using dnsmasq, disable the `dnssec` option in dnsmasq if you
+## configure dnscrypt-proxy to do any kind of filtering (including the filters
+## below and blacklists).
+## But you can still choose resolvers that do DNSSEC validation.
+
+
 ## Immediately respond to IPv6-related queries with an empty response
 ## This makes things faster when there is no IPv6 connectivity, but can
 ## also cause reliability issues with some stub resolvers.
-## Do not enable if you added a validating resolver such as dnsmasq in front
-## of the proxy.
 
 block_ipv6 = false
+
+
+## Immediately respond to A and AAAA queries for host names without a domain name
+
+block_unqualified = true
+
+
+## Immediately respond to queries for local zones instead of leaking them to
+## upstream resolvers (always causing errors or timeouts).
+
+block_undelegated = true
 
 
 ## TTL for synthetic responses sent when a request has been blocked (due to
@@ -338,6 +355,37 @@ cache_neg_max_ttl = 600
 
 
 
+##################################
+#        Local DoH server        #
+##################################
+
+[local_doh]
+
+## dnscrypt-proxy can act as a local DoH server. By doing so, web browsers
+## requiring a direct connection to a DoH server in order to enable some
+## features will enable these, without bypassing your DNS proxy.
+
+## Addresses that the local DoH server should listen to
+
+# listen_addresses = ['127.0.0.1:3000']
+
+
+## Path of the DoH URL. This is not a file, but the part after the hostname
+## in the URL. By convention, `/dns-query` is frequently chosen.
+## For each `listen_address` the complete URL to access the server will be:
+## `https://<listen_address><path>` (ex: `https://127.0.0.1/dns-query`)
+
+# path = "/dns-query"
+
+
+## Certificate file and key - Note that the certificate has to be trusted.
+## See the documentation (wiki) for more information.
+
+# cert_file = "localhost.pem"
+# cert_key_file = "localhost.pem"
+
+
+
 ###############################
 #        Query logging        #
 ###############################
@@ -346,7 +394,7 @@ cache_neg_max_ttl = 600
 
 [query_log]
 
-  ## Path to the query log file (absolute, or relative to the same directory as the executable file)
+  ## Path to the query log file (absolute, or relative to the same directory as the config file)
   ## Can be /dev/stdout to log to the standard output (and set log_files_max_size to 0)
 
   # file = 'query.log'
@@ -373,7 +421,7 @@ cache_neg_max_ttl = 600
 
 [nx_log]
 
-  ## Path to the query log file (absolute, or relative to the same directory as the executable file)
+  ## Path to the query log file (absolute, or relative to the same directory as the config file)
 
   # file = 'nx.log'
 
@@ -403,7 +451,7 @@ cache_neg_max_ttl = 600
 
 [blacklist]
 
-  ## Path to the file of blocking rules (absolute, or relative to the same directory as the executable file)
+  ## Path to the file of blocking rules (absolute, or relative to the same directory as the config file)
 
   # blacklist_file = 'blacklist.txt'
 
@@ -431,7 +479,7 @@ cache_neg_max_ttl = 600
 
 [ip_blacklist]
 
-  ## Path to the file of blocking rules (absolute, or relative to the same directory as the executable file)
+  ## Path to the file of blocking rules (absolute, or relative to the same directory as the config file)
 
   # blacklist_file = 'ip-blacklist.txt'
 
@@ -459,7 +507,7 @@ cache_neg_max_ttl = 600
 
 [whitelist]
 
-  ## Path to the file of whitelisting rules (absolute, or relative to the same directory as the executable file)
+  ## Path to the file of whitelisting rules (absolute, or relative to the same directory as the config file)
 
   # whitelist_file = 'whitelist.txt'
 
@@ -599,7 +647,7 @@ broken_query_padding = ['cisco', 'cisco-ipv6', 'cisco-familyshield']
 ## A relay can be specified as a DNS Stamp (either a relay stamp, or a
 ## DNSCrypt stamp), an IP:port, a hostname:port, or a server name.
 ##
-## The following example routes "example-server-1" via `anon-example-1` or `anon-example-2``,
+## The following example routes "example-server-1" via `anon-example-1` or `anon-example-2`,
 ## and "example-server-2" via the relay whose relay DNS stamp
 ## is "sdns://gRIxMzcuNzQuMjIzLjIzNDo0NDM".
 ##

@@ -27,12 +27,13 @@ const (
 )
 
 type Config struct {
-	LogLevel                 int      `toml:"log_level"`
-	LogFile                  *string  `toml:"log_file"`
-	UseSyslog                bool     `toml:"use_syslog"`
-	ServerNames              []string `toml:"server_names"`
-	DisabledServerNames      []string `toml:"disabled_server_names"`
-	ListenAddresses          []string `toml:"listen_addresses"`
+	LogLevel                 int            `toml:"log_level"`
+	LogFile                  *string        `toml:"log_file"`
+	UseSyslog                bool           `toml:"use_syslog"`
+	ServerNames              []string       `toml:"server_names"`
+	DisabledServerNames      []string       `toml:"disabled_server_names"`
+	ListenAddresses          []string       `toml:"listen_addresses"`
+	LocalDoH                 LocalDoHConfig `toml:"local_doh"`
 	Daemonize                bool
 	UserName                 string `toml:"user_name"`
 	ForceTCP                 bool   `toml:"force_tcp"`
@@ -45,6 +46,8 @@ type Config struct {
 	LBStrategy               string `toml:"lb_strategy"`
 	LBEstimator              bool   `toml:"lb_estimator"`
 	BlockIPv6                bool   `toml:"block_ipv6"`
+	BlockUnqualified         bool   `toml:"block_unqualified"`
+	BlockUndelegated         bool   `toml:"block_undelegated"`
 	Cache                    bool
 	CacheSize                int                         `toml:"cache_size"`
 	CacheNegTTL              uint32                      `toml:"cache_neg_ttl"`
@@ -94,6 +97,7 @@ func newConfig() Config {
 	return Config{
 		LogLevel:                 int(dlog.LogLevel()),
 		ListenAddresses:          []string{"127.0.0.1:53"},
+		LocalDoH:                 LocalDoHConfig{Path: "/dns-query"},
 		Timeout:                  5000,
 		KeepAlive:                5,
 		CertRefreshDelay:         240,
@@ -189,6 +193,13 @@ type BrokenImplementationsConfig struct {
 	BrokenQueryPadding []string `toml:"broken_query_padding"`
 }
 
+type LocalDoHConfig struct {
+	ListenAddresses []string `toml:"listen_addresses"`
+	Path            string   `toml:"path"`
+	CertFile        string   `toml:"cert_file"`
+	CertKeyFile     string   `toml:"cert_key_file"`
+}
+
 type ServerSummary struct {
 	Name        string   `json:"name"`
 	Proto       string   `json:"proto"`
@@ -205,7 +216,7 @@ type ServerSummary struct {
 type ConfigFlags struct {
 	List                    *bool
 	ListAll                 *bool
-	JsonOutput              *bool
+	JSONOutput              *bool
 	Check                   *bool
 	ConfigFile              *string
 	Child                   *bool
@@ -244,7 +255,9 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if len(undecoded) > 0 {
 		return fmt.Errorf("Unsupported key in configuration file: [%s]", undecoded[0])
 	}
-	cdFileDir(foundConfigFile)
+	if err := cdFileDir(foundConfigFile); err != nil {
+		return err
+	}
 	if config.LogLevel >= 0 && config.LogLevel < int(dlog.SeverityLast) {
 		dlog.SetLogLevel(dlog.Severity(config.LogLevel))
 	}
@@ -325,7 +338,7 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	proxy.certRefreshDelayAfterFailure = time.Duration(10 * time.Second)
 	proxy.certIgnoreTimestamp = config.CertIgnoreTimestamp
 	proxy.ephemeralKeys = config.EphemeralKeys
-	if len(config.ListenAddresses) == 0 {
+	if len(config.ListenAddresses) == 0 && len(config.LocalDoH.ListenAddresses) == 0 {
 		dlog.Debug("No local IP/port configured")
 	}
 
@@ -349,8 +362,17 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	proxy.serversInfo.lbEstimator = config.LBEstimator
 
 	proxy.listenAddresses = config.ListenAddresses
+	proxy.localDoHListenAddresses = config.LocalDoH.ListenAddresses
+	if len(config.LocalDoH.Path) > 0 && config.LocalDoH.Path[0] != '/' {
+		dlog.Fatalf("local DoH: [%s] cannot be a valid URL path. Read the documentation", config.LocalDoH.Path)
+	}
+	proxy.localDoHPath = config.LocalDoH.Path
+	proxy.localDoHCertFile = config.LocalDoH.CertFile
+	proxy.localDoHCertKeyFile = config.LocalDoH.CertKeyFile
 	proxy.daemonize = config.Daemonize
 	proxy.pluginBlockIPv6 = config.BlockIPv6
+	proxy.pluginBlockUnqualified = config.BlockUnqualified
+	proxy.pluginBlockUndelegated = config.BlockUndelegated
 	proxy.cache = config.Cache
 	proxy.cacheSize = config.CacheSize
 
@@ -487,7 +509,7 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		}
 	}
 	if *flags.List || *flags.ListAll {
-		config.printRegisteredServers(proxy, *flags.JsonOutput)
+		config.printRegisteredServers(proxy, *flags.JSONOutput)
 		os.Exit(0)
 	}
 	if proxy.routes != nil && len(*proxy.routes) > 0 {
@@ -685,17 +707,17 @@ func includesName(names []string, name string) bool {
 	return false
 }
 
-func cdFileDir(fileName string) {
-	os.Chdir(filepath.Dir(fileName))
+func cdFileDir(fileName string) error {
+	return os.Chdir(filepath.Dir(fileName))
 }
 
 func cdLocal() {
 	exeFileName, err := os.Executable()
 	if err != nil {
 		dlog.Warnf("Unable to determine the executable directory: [%s] -- You will need to specify absolute paths in the configuration file", err)
-		return
+	} else if err = os.Chdir(filepath.Dir(exeFileName)); err != nil {
+		dlog.Warnf("Unable to change working directory to [%s]: %s", exeFileName, err)
 	}
-	os.Chdir(filepath.Dir(exeFileName))
 }
 
 func isIPAndPort(addrStr string) error {

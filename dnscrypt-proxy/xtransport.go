@@ -31,7 +31,7 @@ const (
 	DefaultTimeout          = 30 * time.Second
 	SystemResolverIPTTL     = 24 * time.Hour
 	MinResolverIPTTL        = 12 * time.Hour
-	ExpiredCachedIPGraceTTL = 5 * time.Minute
+	ExpiredCachedIPGraceTTL = 15 * time.Minute
 )
 
 type CachedIPItem struct {
@@ -132,7 +132,7 @@ func (xTransport *XTransport) rebuildTransport() {
 		DialContext: func(ctx context.Context, network, addrStr string) (net.Conn, error) {
 			host, port := ExtractHostAndPort(addrStr, stamps.DefaultPort)
 			ipOnly := host
-			// resolveWithCache() is always called in `Fetch()` before the `Dial()`
+			// resolveAndUpdateCache() is always called in `Fetch()` before the `Dial()`
 			// method is used, so that a cached entry must be present at this point.
 			cachedIP, _ := xTransport.loadCachedIP(host)
 			if cachedIP != nil {
@@ -203,11 +203,11 @@ func (xTransport *XTransport) resolveUsingSystem(host string) (ip net.IP, ttl ti
 func (xTransport *XTransport) resolveUsingResolver(proto, host string, resolver string) (ip net.IP, ttl time.Duration, err error) {
 	dnsClient := dns.Client{Net: proto}
 	if xTransport.useIPv4 {
-		msg := new(dns.Msg)
+		msg := dns.Msg{}
 		msg.SetQuestion(dns.Fqdn(host), dns.TypeA)
 		msg.SetEdns0(uint16(MaxDNSPacketSize), true)
 		var in *dns.Msg
-		if in, _, err = dnsClient.Exchange(msg, resolver); err == nil {
+		if in, _, err = dnsClient.Exchange(&msg, resolver); err == nil {
 			answers := make([]dns.RR, 0)
 			for _, answer := range in.Answer {
 				if answer.Header().Rrtype == dns.TypeA {
@@ -223,11 +223,11 @@ func (xTransport *XTransport) resolveUsingResolver(proto, host string, resolver 
 		}
 	}
 	if xTransport.useIPv6 {
-		msg := new(dns.Msg)
+		msg := dns.Msg{}
 		msg.SetQuestion(dns.Fqdn(host), dns.TypeAAAA)
 		msg.SetEdns0(uint16(MaxDNSPacketSize), true)
 		var in *dns.Msg
-		if in, _, err = dnsClient.Exchange(msg, resolver); err == nil {
+		if in, _, err = dnsClient.Exchange(&msg, resolver); err == nil {
 			answers := make([]dns.RR, 0)
 			for _, answer := range in.Answer {
 				if answer.Header().Rrtype == dns.TypeAAAA {
@@ -245,20 +245,21 @@ func (xTransport *XTransport) resolveUsingResolver(proto, host string, resolver 
 	return
 }
 
-// Return a cached entry, or resolve a name and update the cache
-func (xTransport *XTransport) resolveWithCache(host string) (err error) {
+// If a name is not present in the cache, resolve the name and update the cache
+func (xTransport *XTransport) resolveAndUpdateCache(host string) error {
 	if xTransport.proxyDialer != nil || xTransport.httpProxyFunction != nil {
-		return
+		return nil
 	}
 	if ParseIP(host) != nil {
-		return
+		return nil
 	}
 	cachedIP, expired := xTransport.loadCachedIP(host)
 	if cachedIP != nil && !expired {
-		return
+		return nil
 	}
 	var foundIP net.IP
 	var ttl time.Duration
+	var err error
 	if !xTransport.ignoreSystemDNS {
 		foundIP, ttl, err = xTransport.resolveUsingSystem(host)
 	}
@@ -288,15 +289,16 @@ func (xTransport *XTransport) resolveWithCache(host string) (err error) {
 	}
 	if err != nil {
 		if cachedIP != nil {
+			dlog.Noticef("Using stale [%v] cached address for a grace period", host)
 			foundIP = cachedIP
 			ttl = ExpiredCachedIPGraceTTL
 		} else {
-			return
+			return err
 		}
 	}
 	xTransport.saveCachedIP(host, foundIP, ttl)
 	dlog.Debugf("[%s] IP address [%s] added to the cache, valid for %v", host, foundIP, ttl)
-	return
+	return nil
 }
 
 func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, contentType string, body *[]byte, timeout time.Duration, padding *string) (*http.Response, time.Duration, error) {
@@ -326,7 +328,7 @@ func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, 
 	if xTransport.proxyDialer == nil && strings.HasSuffix(host, ".onion") {
 		return nil, 0, errors.New("Onion service is not reachable without Tor")
 	}
-	if err := xTransport.resolveWithCache(host); err != nil {
+	if err := xTransport.resolveAndUpdateCache(host); err != nil {
 		dlog.Errorf("Unable to resolve [%v] - Make sure that the system resolver works, or that `fallback_resolver` has been set to a resolver that can be reached", host)
 		return nil, 0, err
 	}
