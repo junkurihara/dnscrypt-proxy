@@ -37,8 +37,8 @@ func (plugin *PluginWhitelistName) Init(proxy *Proxy) error {
 	plugin.allWeeklyRanges = proxy.allWeeklyRanges
 	plugin.patternMatcher = NewPatternPatcher()
 	for lineNo, line := range strings.Split(string(bin), "\n") {
-		line = strings.TrimFunc(line, unicode.IsSpace)
-		if len(line) == 0 || strings.HasPrefix(line, "#") {
+		line = TrimAndStripInlineComments(line)
+		if len(line) == 0 {
 			continue
 		}
 		parts := strings.Split(line, "@")
@@ -94,9 +94,6 @@ func (plugin *PluginWhitelistName) Eval(pluginsState *PluginsState, msg *dns.Msg
 		}
 	}
 	if whitelist {
-		if pluginsState.sessionData == nil {
-			pluginsState.sessionData = make(map[string]interface{})
-		}
 		pluginsState.sessionData["whitelisted"] = true
 		if plugin.logger != nil {
 			var clientIPStr string

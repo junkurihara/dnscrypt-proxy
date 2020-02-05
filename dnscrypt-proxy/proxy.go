@@ -348,7 +348,14 @@ func (proxy *Proxy) exchangeWithUDPServer(serverInfo *ServerInfo, sharedKey *[32
 	if serverInfo.RelayUDPAddr != nil {
 		upstreamAddr = serverInfo.RelayUDPAddr
 	}
-	pc, err := net.DialUDP("udp", nil, upstreamAddr)
+	var err error
+	var pc net.Conn
+	proxyDialer := proxy.xTransport.proxyDialer
+	if proxyDialer == nil {
+		pc, err = net.DialUDP("udp", nil, upstreamAddr)
+	} else {
+		pc, err = (*proxyDialer).Dial("udp", upstreamAddr.String())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -359,15 +366,18 @@ func (proxy *Proxy) exchangeWithUDPServer(serverInfo *ServerInfo, sharedKey *[32
 	if serverInfo.RelayUDPAddr != nil {
 		proxy.prepareForRelay(serverInfo.UDPAddr.IP, serverInfo.UDPAddr.Port, &encryptedQuery)
 	}
-	if _, err = pc.Write(encryptedQuery); err != nil {
-		return nil, err
-	}
 	encryptedResponse := make([]byte, MaxDNSPacketSize)
-	length, err := pc.Read(encryptedResponse)
-	if err != nil {
-		return nil, err
+	for tries := 2; tries > 0; tries-- {
+		if _, err = pc.Write(encryptedQuery); err != nil {
+			return nil, err
+		}
+		length, err := pc.Read(encryptedResponse)
+		if err == nil {
+			encryptedResponse = encryptedResponse[:length]
+			break
+		}
+		dlog.Debug("Retry on timeout")
 	}
-	encryptedResponse = encryptedResponse[:length]
 	return proxy.Decrypt(serverInfo, sharedKey, encryptedResponse, clientNonce)
 }
 
@@ -382,7 +392,7 @@ func (proxy *Proxy) exchangeWithTCPServer(serverInfo *ServerInfo, sharedKey *[32
 	if proxyDialer == nil {
 		pc, err = net.DialTCP("tcp", nil, upstreamAddr)
 	} else {
-		pc, err = (*proxyDialer).Dial("tcp", serverInfo.TCPAddr.String())
+		pc, err = (*proxyDialer).Dial("tcp", upstreamAddr.String())
 	}
 	if err != nil {
 		return nil, err
@@ -435,10 +445,12 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 	}
 	pluginsState := NewPluginsState(proxy, clientProto, clientAddr, start)
 	serverName := "-"
+	needsEDNS0Padding := false
 	if serverInfo != nil {
 		serverName = serverInfo.Name
+		needsEDNS0Padding = (serverInfo.Proto == stamps.StampProtoTypeDoH || serverInfo.Proto == stamps.StampProtoTypeTLS)
 	}
-	query, _ = pluginsState.ApplyQueryPlugins(&proxy.pluginsGlobals, query, serverName)
+	query, _ = pluginsState.ApplyQueryPlugins(&proxy.pluginsGlobals, query, serverName, needsEDNS0Padding)
 	if len(query) < MinDNSPacketSize || len(query) > MaxDNSPacketSize {
 		return
 	}
@@ -482,6 +494,12 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 				response, err = proxy.exchangeWithTCPServer(serverInfo, sharedKey, encryptedQuery, clientNonce)
 			}
 			if err != nil {
+				if stale, ok := pluginsState.sessionData["stale"]; ok {
+					dlog.Debug("Serving stale response")
+					response, err = (stale.(*dns.Msg)).Pack()
+				}
+			}
+			if err != nil {
 				if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
 					pluginsState.returnCode = PluginsReturnCodeServerTimeout
 				} else {
@@ -497,13 +515,21 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 			serverInfo.noticeBegin(proxy)
 			resp, _, err := proxy.xTransport.DoHQuery(serverInfo.useGet, serverInfo.URL, query, proxy.timeout)
 			SetTransactionID(query, tid)
+			if err == nil {
+				response = nil
+			} else if stale, ok := pluginsState.sessionData["stale"]; ok {
+				dlog.Debug("Serving stale response")
+				response, err = (stale.(*dns.Msg)).Pack()
+			}
 			if err != nil {
 				pluginsState.returnCode = PluginsReturnCodeNetworkError
 				pluginsState.ApplyLoggingPlugins(&proxy.pluginsGlobals)
 				serverInfo.noticeFailure(proxy)
 				return
 			}
-			response, err = ioutil.ReadAll(io.LimitReader(resp.Body, int64(MaxDNSPacketSize)))
+			if response == nil {
+				response, err = ioutil.ReadAll(io.LimitReader(resp.Body, int64(MaxDNSPacketSize)))
+			}
 			if err != nil {
 				pluginsState.returnCode = PluginsReturnCodeNetworkError
 				pluginsState.ApplyLoggingPlugins(&proxy.pluginsGlobals)
@@ -543,8 +569,12 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 			}
 		}
 		if rcode := Rcode(response); rcode == dns.RcodeServerFailure { // SERVFAIL
-			dlog.Infof("Server [%v] returned temporary error code [%v] -- Upstream server may be experiencing connectivity issues", serverInfo.Name, rcode)
-			serverInfo.noticeFailure(proxy)
+			if pluginsState.dnssec {
+				dlog.Debug("A response had an invalid DNSSEC signature")
+			} else {
+				dlog.Infof("Server [%v] returned temporary error code SERVFAIL -- Invalid DNSSEC signature received or server may be experiencing connectivity issues", serverInfo.Name)
+				serverInfo.noticeFailure(proxy)
+			}
 		} else {
 			serverInfo.noticeSuccess(proxy)
 		}

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	AppVersion            = "2.0.36"
+	AppVersion            = "2.0.39"
 	DefaultConfigFileName = "dnscrypt-proxy.toml"
 )
 
@@ -37,12 +37,7 @@ func main() {
 	if err != nil {
 		dlog.Fatal("Unable to find the path to the current directory")
 	}
-	svcConfig := &service.Config{
-		Name:             "dnscrypt-proxy",
-		DisplayName:      "DNSCrypt client proxy",
-		Description:      "Encrypted/authenticated DNS proxy",
-		WorkingDirectory: pwd,
-	}
+
 	svcFlag := flag.String("service", "", fmt.Sprintf("Control the system service: %q", service.ControlAction))
 	version := flag.Bool("version", false, "print current proxy version")
 	resolve := flag.String("resolve", "", "resolve a name using system libraries")
@@ -70,11 +65,20 @@ func main() {
 	app := &App{
 		flags: &flags,
 	}
+
+	svcConfig := &service.Config{
+		Name:             "dnscrypt-proxy",
+		DisplayName:      "DNSCrypt client proxy",
+		Description:      "Encrypted/authenticated DNS proxy",
+		WorkingDirectory: pwd,
+		Arguments:        []string{"-config", *flags.ConfigFile},
+	}
 	svc, err := service.New(app, svcConfig)
 	if err != nil {
 		svc = nil
 		dlog.Debug(err)
 	}
+
 	app.proxy = NewProxy()
 	_ = ServiceManagerStartNotify()
 	if len(*svcFlag) != 0 {
