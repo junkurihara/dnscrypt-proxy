@@ -3,8 +3,6 @@ package main
 import (
 	crypto_rand "crypto/rand"
 	"encoding/binary"
-	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"sync/atomic"
@@ -79,6 +77,7 @@ type Proxy struct {
 	routes                        *map[string][]string
 	serversWithBrokenQueryPadding []string
 	showCerts                     bool
+	dohCreds                      *map[string]DOHClientCreds
 }
 
 func (proxy *Proxy) addDNSListener(listenAddrStr string) {
@@ -270,7 +269,7 @@ func (proxy *Proxy) udpListener(clientPc *net.UDPConn) {
 				return
 			}
 			defer proxy.clientsCountDec()
-			proxy.processIncomingQuery(proxy.serversInfo.getOne(), "udp", proxy.mainProto, packet, &clientAddr, clientPc, start)
+			proxy.processIncomingQuery("udp", proxy.mainProto, packet, &clientAddr, clientPc, start)
 		}()
 	}
 }
@@ -300,7 +299,7 @@ func (proxy *Proxy) tcpListener(acceptPc *net.TCPListener) {
 				return
 			}
 			defer proxy.clientsCountDec()
-			if err = clientPc.SetDeadline(time.Now().Add(proxy.timeout)); err != nil {
+			if err := clientPc.SetDeadline(time.Now().Add(proxy.timeout)); err != nil {
 				return
 			}
 			packet, err := ReadPrefixed(&clientPc)
@@ -308,7 +307,7 @@ func (proxy *Proxy) tcpListener(acceptPc *net.TCPListener) {
 				return
 			}
 			clientAddr := clientPc.RemoteAddr()
-			proxy.processIncomingQuery(proxy.serversInfo.getOne(), "tcp", "tcp", packet, &clientAddr, clientPc, start)
+			proxy.processIncomingQuery("tcp", "tcp", packet, &clientAddr, clientPc, start)
 		}()
 	}
 }
@@ -360,7 +359,7 @@ func (proxy *Proxy) exchangeWithUDPServer(serverInfo *ServerInfo, sharedKey *[32
 		return nil, err
 	}
 	defer pc.Close()
-	if err = pc.SetDeadline(time.Now().Add(serverInfo.Timeout)); err != nil {
+	if err := pc.SetDeadline(time.Now().Add(serverInfo.Timeout)); err != nil {
 		return nil, err
 	}
 	if serverInfo.RelayUDPAddr != nil {
@@ -368,7 +367,7 @@ func (proxy *Proxy) exchangeWithUDPServer(serverInfo *ServerInfo, sharedKey *[32
 	}
 	encryptedResponse := make([]byte, MaxDNSPacketSize)
 	for tries := 2; tries > 0; tries-- {
-		if _, err = pc.Write(encryptedQuery); err != nil {
+		if _, err := pc.Write(encryptedQuery); err != nil {
 			return nil, err
 		}
 		length, err := pc.Read(encryptedResponse)
@@ -398,7 +397,7 @@ func (proxy *Proxy) exchangeWithTCPServer(serverInfo *ServerInfo, sharedKey *[32
 		return nil, err
 	}
 	defer pc.Close()
-	if err = pc.SetDeadline(time.Now().Add(serverInfo.Timeout)); err != nil {
+	if err := pc.SetDeadline(time.Now().Add(serverInfo.Timeout)); err != nil {
 		return nil, err
 	}
 	if serverInfo.RelayTCPAddr != nil {
@@ -408,7 +407,7 @@ func (proxy *Proxy) exchangeWithTCPServer(serverInfo *ServerInfo, sharedKey *[32
 	if err != nil {
 		return nil, err
 	}
-	if _, err = pc.Write(encryptedQuery); err != nil {
+	if _, err := pc.Write(encryptedQuery); err != nil {
 		return nil, err
 	}
 	encryptedResponse, err := ReadPrefixed(&pc)
@@ -439,18 +438,19 @@ func (proxy *Proxy) clientsCountDec() {
 	}
 }
 
-func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto string, serverProto string, query []byte, clientAddr *net.Addr, clientPc net.Conn, start time.Time) (response []byte) {
+func (proxy *Proxy) processIncomingQuery(clientProto string, serverProto string, query []byte, clientAddr *net.Addr, clientPc net.Conn, start time.Time) (response []byte) {
 	if len(query) < MinDNSPacketSize {
 		return
 	}
 	pluginsState := NewPluginsState(proxy, clientProto, clientAddr, start)
 	serverName := "-"
 	needsEDNS0Padding := false
+	serverInfo := proxy.serversInfo.getOne()
 	if serverInfo != nil {
 		serverName = serverInfo.Name
 		needsEDNS0Padding = (serverInfo.Proto == stamps.StampProtoTypeDoH || serverInfo.Proto == stamps.StampProtoTypeTLS)
 	}
-	query, _ = pluginsState.ApplyQueryPlugins(&proxy.pluginsGlobals, query, serverName, needsEDNS0Padding)
+	query, _ = pluginsState.ApplyQueryPlugins(&proxy.pluginsGlobals, query, needsEDNS0Padding)
 	if len(query) < MinDNSPacketSize || len(query) > MaxDNSPacketSize {
 		return
 	}
@@ -470,6 +470,7 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 	}
 	if len(response) == 0 && serverInfo != nil {
 		var ttl *uint32
+		pluginsState.serverName = serverName
 		if serverInfo.Proto == stamps.StampProtoTypeDNSCrypt {
 			sharedKey, encryptedQuery, clientNonce, err := proxy.Encrypt(serverInfo, query, serverProto)
 			if err != nil {
@@ -513,9 +514,9 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 			tid := TransactionID(query)
 			SetTransactionID(query, 0)
 			serverInfo.noticeBegin(proxy)
-			resp, _, err := proxy.xTransport.DoHQuery(serverInfo.useGet, serverInfo.URL, query, proxy.timeout)
+			serverResponse, tls, _, err := proxy.xTransport.DoHQuery(serverInfo.useGet, serverInfo.URL, query, proxy.timeout)
 			SetTransactionID(query, tid)
-			if err == nil {
+			if err == nil || tls == nil || !tls.HandshakeComplete {
 				response = nil
 			} else if stale, ok := pluginsState.sessionData["stale"]; ok {
 				dlog.Debug("Serving stale response")
@@ -528,7 +529,7 @@ func (proxy *Proxy) processIncomingQuery(serverInfo *ServerInfo, clientProto str
 				return
 			}
 			if response == nil {
-				response, err = ioutil.ReadAll(io.LimitReader(resp.Body, int64(MaxDNSPacketSize)))
+				response = serverResponse
 			}
 			if err != nil {
 				pluginsState.returnCode = PluginsReturnCodeNetworkError
