@@ -327,16 +327,17 @@ func fetchDNSCryptServerInfo(proxy *Proxy, name string, stamp stamps.ServerStamp
 		}
 	}
 	relayUDPAddr, relayTCPAddr, err := route(proxy, name)
-	if knownBugs.incorrectPadding && (relayUDPAddr != nil || relayTCPAddr != nil) {
-		relayTCPAddr, relayUDPAddr = nil, nil
-		dlog.Warnf("[%v] is incompatible with anonymization", name)
-	}
 	if err != nil {
 		return ServerInfo{}, err
 	}
 	certInfo, rtt, fragmentsBlocked, err := FetchCurrentDNSCryptCert(proxy, &name, proxy.mainProto, stamp.ServerPk, stamp.ServerAddrStr, stamp.ProviderName, isNew, relayUDPAddr, relayTCPAddr, knownBugs)
 	if !knownBugs.incorrectPadding && fragmentsBlocked {
 		dlog.Debugf("[%v] drops fragmented queries", name)
+		knownBugs.incorrectPadding = true
+	}
+	if knownBugs.incorrectPadding && (relayUDPAddr != nil || relayTCPAddr != nil) {
+		dlog.Warnf("[%v] is incompatible with anonymization", name)
+		relayTCPAddr, relayUDPAddr = nil, nil
 	}
 	if err != nil {
 		return ServerInfo{}, err
@@ -406,7 +407,7 @@ func fetchDoHServerInfo(proxy *Proxy, name string, stamp stamps.ServerStamp, isN
 		dohClientCreds, ok = (*proxy.dohCreds)["*"]
 	}
 	if ok {
-		dlog.Noticef("[%s] Cert: %s, Key: %s", name, dohClientCreds.clientCert, dohClientCreds.clientKey)
+		dlog.Noticef("Enabling TLS authentication for [%s]", name)
 		proxy.xTransport.tlsClientCreds = dohClientCreds
 		proxy.xTransport.rebuildTransport()
 	}

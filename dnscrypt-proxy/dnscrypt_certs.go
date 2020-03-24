@@ -42,7 +42,6 @@ func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk
 		tryFragmentsSupport = false
 	}
 	in, rtt, fragmentsBlocked, err := dnsExchange(proxy, proto, &query, serverAddress, relayUDPAddr, relayTCPAddr, serverName, tryFragmentsSupport)
-	_ = fragmentsBlocked
 	if err != nil {
 		dlog.Noticef("[%s] TIMEOUT", *serverName)
 		return CertInfo{}, 0, fragmentsBlocked, err
@@ -199,7 +198,7 @@ func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress strin
 		options := 0
 
 		for tries := 1; tries >= 0; tries-- {
-			if tryFragmentsSupport && false {
+			if tryFragmentsSupport {
 				go func(query *dns.Msg, delay time.Duration) {
 					time.Sleep(delay)
 					option := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
