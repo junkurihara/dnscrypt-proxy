@@ -134,7 +134,11 @@ func newConfig() Config {
 		LBEstimator:              true,
 		BlockedQueryResponse:     "hinfo",
 		BrokenImplementations: BrokenImplementationsConfig{
-			BrokenQueryPadding: []string{"cisco", "cisco-ipv6", "cisco-familyshield"},
+			FragmentsBlocked: []string{
+				"cisco", "cisco-ipv6", "cisco-familyshield", "cisco-familyshield-ipv6",
+				"quad9-dnscrypt-ip4-filter-alt", "quad9-dnscrypt-ip4-filter-pri", "quad9-dnscrypt-ip4-nofilter-alt", "quad9-dnscrypt-ip4-nofilter-pri", "quad9-dnscrypt-ip6-filter-alt", "quad9-dnscrypt-ip6-filter-pri", "quad9-dnscrypt-ip6-nofilter-alt", "quad9-dnscrypt-ip6-nofilter-pri",
+				"cleanbrowsing-adult", "cleanbrowsing-family-ipv6", "cleanbrowsing-family", "cleanbrowsing-security",
+			},
 		},
 	}
 }
@@ -188,11 +192,13 @@ type AnonymizedDNSRouteConfig struct {
 }
 
 type AnonymizedDNSConfig struct {
-	Routes []AnonymizedDNSRouteConfig `toml:"routes"`
+	Routes           []AnonymizedDNSRouteConfig `toml:"routes"`
+	SkipIncompatible bool                       `toml:"skip_incompatible"`
 }
 
 type BrokenImplementationsConfig struct {
 	BrokenQueryPadding []string `toml:"broken_query_padding"`
+	FragmentsBlocked   []string `toml:"fragments_blocked"`
 }
 
 type LocalDoHConfig struct {
@@ -491,6 +497,8 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		}
 		proxy.routes = &routes
 	}
+	proxy.skipAnonIncompatbibleResolvers = config.AnonymizedDNS.SkipIncompatible
+
 	configClientCreds := config.TLSClientAuth.Creds
 	creds := make(map[string]DOHClientCreds)
 	for _, configClientCred := range configClientCreds {
@@ -502,7 +510,10 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	}
 	proxy.dohCreds = &creds
 
-	proxy.serversWithBrokenQueryPadding = config.BrokenImplementations.BrokenQueryPadding
+	// Backwards compatibility
+	config.BrokenImplementations.FragmentsBlocked = append(config.BrokenImplementations.FragmentsBlocked, config.BrokenImplementations.BrokenQueryPadding...)
+
+	proxy.serversBlockingFragments = config.BrokenImplementations.BrokenQueryPadding
 
 	if *flags.ListAll {
 		config.ServerNames = nil
