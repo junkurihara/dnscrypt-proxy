@@ -86,6 +86,8 @@ type PluginsState struct {
 	cacheHit                         bool
 	returnCode                       PluginsReturnCode
 	serverName                       string
+	serverProto                      string
+	timeout                          time.Duration
 }
 
 func (proxy *Proxy) InitPluginsGlobals() error {
@@ -132,6 +134,9 @@ func (proxy *Proxy) InitPluginsGlobals() error {
 	}
 	if len(proxy.blockIPFile) != 0 {
 		*responsePlugins = append(*responsePlugins, Plugin(new(PluginBlockIP)))
+	}
+	if len(proxy.dns64Resolvers) != 0 || len(proxy.dns64Prefixes) != 0 {
+		*responsePlugins = append(*responsePlugins, Plugin(new(PluginDns64)))
 	}
 	if proxy.cache {
 		*responsePlugins = append(*responsePlugins, Plugin(new(PluginCacheResponse)))
@@ -222,7 +227,7 @@ type Plugin interface {
 	Eval(pluginsState *PluginsState, msg *dns.Msg) error
 }
 
-func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, start time.Time) PluginsState {
+func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, serverProto string, start time.Time) PluginsState {
 	return PluginsState{
 		action:                           PluginsActionContinue,
 		returnCode:                       PluginsReturnCodePass,
@@ -238,6 +243,8 @@ func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, sta
 		questionMsg:                      nil,
 		qName:                            "",
 		serverName:                       "-",
+		serverProto:                      serverProto,
+		timeout:                          proxy.timeout,
 		requestStart:                     start,
 		maxUnencryptedUDPSafePayloadSize: MaxDNSUDPSafePacketSize,
 		sessionData:                      make(map[string]interface{}),

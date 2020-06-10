@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/facebookgo/pidfile"
 	"github.com/jedisct1/dlog"
 	stamps "github.com/jedisct1/go-dnsstamps"
 	netproxy "golang.org/x/net/proxy"
@@ -29,6 +30,7 @@ const (
 type Config struct {
 	LogLevel                 int            `toml:"log_level"`
 	LogFile                  *string        `toml:"log_file"`
+	LogFileLatest            bool           `toml:"log_file_latest"`
 	UseSyslog                bool           `toml:"use_syslog"`
 	ServerNames              []string       `toml:"server_names"`
 	DisabledServerNames      []string       `toml:"disabled_server_names"`
@@ -92,12 +94,14 @@ type Config struct {
 	BlockedQueryResponse     string                      `toml:"blocked_query_response"`
 	QueryMeta                []string                    `toml:"query_meta"`
 	AnonymizedDNS            AnonymizedDNSConfig         `toml:"anonymized_dns"`
-	TLSClientAuth            TLSClientAuthConfig         `toml:"tls_client_auth"`
+	DoHClientX509Auth        DoHClientX509AuthConfig     `toml:"doh_client_x509_auth"`
+	DNS64                    DNS64Config                 `toml:"dns64"`
 }
 
 func newConfig() Config {
 	return Config{
 		LogLevel:                 int(dlog.LogLevel()),
+		LogFileLatest:            true,
 		ListenAddresses:          []string{"127.0.0.1:53"},
 		LocalDoH:                 LocalDoHConfig{Path: "/dns-query"},
 		Timeout:                  5000,
@@ -225,10 +229,16 @@ type TLSClientAuthCredsConfig struct {
 	ServerName string `toml:"server_name"`
 	ClientCert string `toml:"client_cert"`
 	ClientKey  string `toml:"client_key"`
+	RootCA     string `toml:"root_ca"`
 }
 
-type TLSClientAuthConfig struct {
+type DoHClientX509AuthConfig struct {
 	Creds []TLSClientAuthCredsConfig `toml:"creds"`
+}
+
+type DNS64Config struct {
+	Prefixes  []string `toml:"prefix"`
+	Resolvers []string `toml:"resolver"`
 }
 
 type ConfigFlags struct {
@@ -282,6 +292,7 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if dlog.LogLevel() <= dlog.SeverityDebug && os.Getenv("DEBUG") == "" {
 		dlog.SetLogLevel(dlog.SeverityInfo)
 	}
+	dlog.TruncateLogFile(config.LogFileLatest)
 	if config.UseSyslog {
 		dlog.UseSyslog(true)
 	} else if config.LogFile != nil {
@@ -499,12 +510,13 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	}
 	proxy.skipAnonIncompatbibleResolvers = config.AnonymizedDNS.SkipIncompatible
 
-	configClientCreds := config.TLSClientAuth.Creds
+	configClientCreds := config.DoHClientX509Auth.Creds
 	creds := make(map[string]DOHClientCreds)
 	for _, configClientCred := range configClientCreds {
 		credFiles := DOHClientCreds{
 			clientCert: configClientCred.ClientCert,
 			clientKey:  configClientCred.ClientKey,
+			rootCA:     configClientCred.RootCA,
 		}
 		creds[configClientCred.ServerName] = credFiles
 	}
@@ -513,7 +525,10 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	// Backwards compatibility
 	config.BrokenImplementations.FragmentsBlocked = append(config.BrokenImplementations.FragmentsBlocked, config.BrokenImplementations.BrokenQueryPadding...)
 
-	proxy.serversBlockingFragments = config.BrokenImplementations.BrokenQueryPadding
+	proxy.serversBlockingFragments = config.BrokenImplementations.FragmentsBlocked
+
+	proxy.dns64Prefixes = config.DNS64.Prefixes
+	proxy.dns64Resolvers = config.DNS64.Resolvers
 
 	if *flags.ListAll {
 		config.ServerNames = nil
@@ -543,9 +558,27 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if proxy.showCerts {
 		proxy.listenAddresses = nil
 	}
-	dlog.Noticef("dnscrypt-proxy %s", AppVersion)
+	if !proxy.child {
+		dlog.Noticef("dnscrypt-proxy %s", AppVersion)
+	}
 	if err := NetProbe(netprobeAddress, netprobeTimeout); err != nil {
 		return err
+	}
+
+	for _, listenAddrStr := range proxy.listenAddresses {
+		proxy.addDNSListener(listenAddrStr)
+	}
+	for _, listenAddrStr := range proxy.localDoHListenAddresses {
+		proxy.addLocalDoHListener(listenAddrStr)
+	}
+	if err := proxy.addSystemDListeners(); err != nil {
+		dlog.Fatal(err)
+	}
+	_ = pidfile.Write()
+	// if 'userName' is set and we are the parent process drop privilege and exit
+	if len(proxy.userName) > 0 && !proxy.child {
+		proxy.dropPrivilege(proxy.userName, FileDescriptors)
+		dlog.Fatal("Dropping privileges is not supporting on this operating system. Unset `user_name` in the configuration file.")
 	}
 	if !config.OfflineMode {
 		if err := config.loadSources(proxy); err != nil {
@@ -693,8 +726,11 @@ func (config *Config) loadSource(proxy *Proxy, requiredProps stamps.ServerInform
 	}
 	source, err := NewSource(cfgSourceName, proxy.xTransport, cfgSource.URLs, cfgSource.MinisignKeyStr, cfgSource.CacheFile, cfgSource.FormatStr, time.Duration(cfgSource.RefreshDelay)*time.Hour)
 	if err != nil {
-		dlog.Criticalf("Unable to retrieve source [%s]: [%s]", cfgSourceName, err)
-		return err
+		if len(source.in) <= 0 {
+			dlog.Criticalf("Unable to retrieve source [%s]: [%s]", cfgSourceName, err)
+			return err
+		}
+		dlog.Infof("Downloading [%s] failed: %v, using cache file to startup", source.name, err)
 	}
 	proxy.sources = append(proxy.sources, source)
 	registeredServers, err := source.Parse(cfgSource.Prefix)

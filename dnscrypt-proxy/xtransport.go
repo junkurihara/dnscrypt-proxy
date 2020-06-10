@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha512"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -163,6 +164,15 @@ func (xTransport *XTransport) rebuildTransport() {
 		cert, err := tls.LoadX509KeyPair(clientCreds.clientCert, clientCreds.clientKey)
 		if err != nil {
 			dlog.Fatalf("Unable to use certificate [%v] (key: [%v]): %v", clientCreds.clientCert, clientCreds.clientKey, err)
+		}
+		if clientCreds.rootCA != "" {
+			caCert, err := ioutil.ReadFile(clientCreds.rootCA)
+			if err != nil {
+				dlog.Fatal(err)
+			}
+			systemCertPool, err := x509.SystemCertPool()
+			systemCertPool.AppendCertsFromPEM(caCert)
+			tlsClientConfig.RootCAs = systemCertPool
 		}
 		tlsClientConfig.Certificates = []tls.Certificate{cert}
 	}
@@ -405,7 +415,6 @@ func (xTransport *XTransport) DoHQuery(useGet bool, url *url.URL, body []byte, t
 	dataType := "application/dns-message"
 	if useGet {
 		qs := url.Query()
-		qs.Add("ct", "")
 		encBody := base64.RawURLEncoding.EncodeToString(body)
 		qs.Add("dns", encBody)
 		url2 := *url
