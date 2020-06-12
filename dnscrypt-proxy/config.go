@@ -95,6 +95,7 @@ type Config struct {
 	QueryMeta                []string                    `toml:"query_meta"`
 	AnonymizedDNS            AnonymizedDNSConfig         `toml:"anonymized_dns"`
 	DoHClientX509Auth        DoHClientX509AuthConfig     `toml:"doh_client_x509_auth"`
+	DoHClientX509AuthLegacy  DoHClientX509AuthConfig     `toml:"tls_client_auth"`
 	DNS64                    DNS64Config                 `toml:"dns64"`
 }
 
@@ -510,6 +511,9 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	}
 	proxy.skipAnonIncompatbibleResolvers = config.AnonymizedDNS.SkipIncompatible
 
+	if config.DoHClientX509AuthLegacy.Creds != nil {
+		dlog.Fatal("[tls_client_auth] has been renamed to [doh_client_x509_auth] - Update your config file.")
+	}
 	configClientCreds := config.DoHClientX509Auth.Creds
 	creds := make(map[string]DOHClientCreds)
 	for _, configClientCred := range configClientCreds {
@@ -555,24 +559,22 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		netprobeAddress = config.FallbackResolvers[0]
 	}
 	proxy.showCerts = *flags.ShowCerts || len(os.Getenv("SHOW_CERTS")) > 0
-	if proxy.showCerts {
-		proxy.listenAddresses = nil
-	}
 	if !proxy.child {
 		dlog.Noticef("dnscrypt-proxy %s", AppVersion)
 	}
-	if err := NetProbe(netprobeAddress, netprobeTimeout); err != nil {
-		return err
-	}
-
-	for _, listenAddrStr := range proxy.listenAddresses {
-		proxy.addDNSListener(listenAddrStr)
-	}
-	for _, listenAddrStr := range proxy.localDoHListenAddresses {
-		proxy.addLocalDoHListener(listenAddrStr)
-	}
-	if err := proxy.addSystemDListeners(); err != nil {
-		dlog.Fatal(err)
+	if !*flags.Check && !*flags.ShowCerts && !*flags.List && !*flags.ListAll {
+		if err := NetProbe(netprobeAddress, netprobeTimeout); err != nil {
+			return err
+		}
+		for _, listenAddrStr := range proxy.listenAddresses {
+			proxy.addDNSListener(listenAddrStr)
+		}
+		for _, listenAddrStr := range proxy.localDoHListenAddresses {
+			proxy.addLocalDoHListener(listenAddrStr)
+		}
+		if err := proxy.addSystemDListeners(); err != nil {
+			dlog.Fatal(err)
+		}
 	}
 	_ = pidfile.Write()
 	// if 'userName' is set and we are the parent process drop privilege and exit
@@ -673,7 +675,8 @@ func (config *Config) loadSources(proxy *Proxy) error {
 	if config.SourceRequireNoFilter {
 		requiredProps |= stamps.ServerInformalPropertyNoFilter
 	}
-	for cfgSourceName, cfgSource := range config.SourcesConfig {
+	for cfgSourceName, cfgSource_ := range config.SourcesConfig {
+		cfgSource := cfgSource_
 		if err := config.loadSource(proxy, requiredProps, cfgSourceName, &cfgSource); err != nil {
 			return err
 		}
