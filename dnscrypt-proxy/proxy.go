@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	crypto_rand "crypto/rand"
 	"encoding/binary"
 	"net"
@@ -17,81 +18,87 @@ import (
 )
 
 type Proxy struct {
-	udpListeners                   []*net.UDPConn
-	tcpListeners                   []*net.TCPListener
-	localDoHListeners              []*net.TCPListener
-	userName                       string
-	child                          bool
-	proxyPublicKey                 [32]byte
-	proxySecretKey                 [32]byte
-	ephemeralKeys                  bool
-	questionSizeEstimator          QuestionSizeEstimator
+	pluginsGlobals                 PluginsGlobals
 	serversInfo                    ServersInfo
-	timeout                        time.Duration
-	certRefreshDelay               time.Duration
-	certRefreshDelayAfterFailure   time.Duration
-	certIgnoreTimestamp            bool
-	mainProto                      string
+	questionSizeEstimator          QuestionSizeEstimator
+	registeredServers              []RegisteredServer
+	dns64Resolvers                 []string
+	dns64Prefixes                  []string
+	serversBlockingFragments       []string
+	ednsClientSubnets              []*net.IPNet
+	queryLogIgnoredQtypes          []string
+	localDoHListeners              []*net.TCPListener
+	queryMeta                      []string
+	udpListeners                   []*net.UDPConn
+	sources                        []*Source
+	tcpListeners                   []*net.TCPListener
+	registeredRelays               []RegisteredServer
 	listenAddresses                []string
 	localDoHListenAddresses        []string
-	localDoHPath                   string
+	xTransport                     *XTransport
+	dohCreds                       *map[string]DOHClientCreds
+	allWeeklyRanges                *map[string]WeeklyRanges
+	routes                         *map[string][]string
+	nxLogFormat                    string
 	localDoHCertFile               string
 	localDoHCertKeyFile            string
-	daemonize                      bool
-	registeredServers              []RegisteredServer
-	registeredRelays               []RegisteredServer
-	pluginBlockIPv6                bool
-	pluginBlockUnqualified         bool
-	pluginBlockUndelegated         bool
-	cache                          bool
-	cacheSize                      int
-	cacheNegMinTTL                 uint32
-	cacheNegMaxTTL                 uint32
-	cacheMinTTL                    uint32
-	cacheMaxTTL                    uint32
-	rejectTTL                      uint32
-	cloakTTL                       uint32
-	queryLogFile                   string
-	queryLogFormat                 string
-	queryLogIgnoredQtypes          []string
-	nxLogFile                      string
-	nxLogFormat                    string
-	blockNameFile                  string
-	whitelistNameFile              string
-	blockNameLogFile               string
-	whitelistNameLogFile           string
-	blockNameFormat                string
-	whitelistNameFormat            string
-	blockIPFile                    string
-	blockIPLogFile                 string
-	blockIPFormat                  string
-	forwardFile                    string
+	captivePortalFile              string
+	localDoHPath                   string
+	mainProto                      string
 	cloakFile                      string
-	pluginsGlobals                 PluginsGlobals
-	sources                        []*Source
+	forwardFile                    string
+	blockIPFormat                  string
+	blockIPLogFile                 string
+	allowedIPFile                  string
+	allowedIPFormat                string
+	allowedIPLogFile               string
+	queryLogFormat                 string
+	blockIPFile                    string
+	whitelistNameFormat            string
+	whitelistNameLogFile           string
+	blockNameLogFile               string
+	whitelistNameFile              string
+	blockNameFile                  string
+	queryLogFile                   string
+	blockedQueryResponse           string
+	userName                       string
+	nxLogFile                      string
+	blockNameFormat                string
+	proxySecretKey                 [32]byte
+	proxyPublicKey                 [32]byte
+	certRefreshDelayAfterFailure   time.Duration
+	timeout                        time.Duration
+	certRefreshDelay               time.Duration
+	cacheSize                      int
+	logMaxBackups                  int
+	logMaxAge                      int
+	logMaxSize                     int
+	cacheNegMinTTL                 uint32
+	rejectTTL                      uint32
+	cacheMaxTTL                    uint32
 	clientsCount                   uint32
 	maxClients                     uint32
-	xTransport                     *XTransport
-	allWeeklyRanges                *map[string]WeeklyRanges
-	logMaxSize                     int
-	logMaxAge                      int
-	logMaxBackups                  int
-	blockedQueryResponse           string
-	queryMeta                      []string
-	routes                         *map[string][]string
-	serversBlockingFragments       []string
+	cacheMinTTL                    uint32
+	cacheNegMaxTTL                 uint32
+	cloakTTL                       uint32
+	cache                          bool
+	pluginBlockIPv6                bool
+	ephemeralKeys                  bool
+	pluginBlockUnqualified         bool
 	showCerts                      bool
-	dohCreds                       *map[string]DOHClientCreds
+	certIgnoreTimestamp            bool
 	skipAnonIncompatbibleResolvers bool
-	dns64Prefixes                  []string
-	dns64Resolvers                 []string
+	anonDirectCertFallback         bool
+	pluginBlockUndelegated         bool
+	child                          bool
+	daemonize                      bool
 }
 
-func (proxy *Proxy) registerUdpListener(conn *net.UDPConn) {
+func (proxy *Proxy) registerUDPListener(conn *net.UDPConn) {
 	proxy.udpListeners = append(proxy.udpListeners, conn)
 }
 
-func (proxy *Proxy) registerTcpListener(listener *net.TCPListener) {
+func (proxy *Proxy) registerTCPListener(listener *net.TCPListener) {
 	proxy.tcpListeners = append(proxy.tcpListeners, listener)
 }
 
@@ -148,23 +155,23 @@ func (proxy *Proxy) addDNSListener(listenAddrStr string) {
 	}
 
 	// child
-	listenerUDP, err := net.FilePacketConn(os.NewFile(uintptr(3+FileDescriptorNum), "listenerUDP"))
+	listenerUDP, err := net.FilePacketConn(os.NewFile(InheritedDescriptorsBase+FileDescriptorNum, "listenerUDP"))
 	if err != nil {
 		dlog.Fatalf("Unable to switch to a different user: %v", err)
 	}
 	FileDescriptorNum++
 
-	listenerTCP, err := net.FileListener(os.NewFile(uintptr(3+FileDescriptorNum), "listenerTCP"))
+	listenerTCP, err := net.FileListener(os.NewFile(InheritedDescriptorsBase+FileDescriptorNum, "listenerTCP"))
 	if err != nil {
 		dlog.Fatalf("Unable to switch to a different user: %v", err)
 	}
 	FileDescriptorNum++
 
 	dlog.Noticef("Now listening to %v [UDP]", listenUDPAddr)
-	proxy.registerUdpListener(listenerUDP.(*net.UDPConn))
+	proxy.registerUDPListener(listenerUDP.(*net.UDPConn))
 
 	dlog.Noticef("Now listening to %v [TCP]", listenAddrStr)
-	proxy.registerTcpListener(listenerTCP.(*net.TCPListener))
+	proxy.registerTCPListener(listenerTCP.(*net.TCPListener))
 }
 
 func (proxy *Proxy) addLocalDoHListener(listenAddrStr string) {
@@ -199,7 +206,7 @@ func (proxy *Proxy) addLocalDoHListener(listenAddrStr string) {
 
 	// child
 
-	listenerTCP, err := net.FileListener(os.NewFile(uintptr(3+FileDescriptorNum), "listenerTCP"))
+	listenerTCP, err := net.FileListener(os.NewFile(InheritedDescriptorsBase+FileDescriptorNum, "listenerTCP"))
 	if err != nil {
 		dlog.Fatalf("Unable to switch to a different user: %v", err)
 	}
@@ -282,16 +289,6 @@ func (proxy *Proxy) udpListener(clientPc *net.UDPConn) {
 	}
 }
 
-func (proxy *Proxy) udpListenerFromAddr(listenAddr *net.UDPAddr) error {
-	clientPc, err := net.ListenUDP("udp", listenAddr)
-	if err != nil {
-		return err
-	}
-	proxy.registerUdpListener(clientPc)
-	dlog.Noticef("Now listening to %v [UDP]", listenAddr)
-	return nil
-}
-
 func (proxy *Proxy) tcpListener(acceptPc *net.TCPListener) {
 	defer acceptPc.Close()
 	for {
@@ -320,22 +317,44 @@ func (proxy *Proxy) tcpListener(acceptPc *net.TCPListener) {
 	}
 }
 
-func (proxy *Proxy) tcpListenerFromAddr(listenAddr *net.TCPAddr) error {
-	acceptPc, err := net.ListenTCP("tcp", listenAddr)
+func (proxy *Proxy) udpListenerFromAddr(listenAddr *net.UDPAddr) error {
+	listenConfig, err := proxy.udpListenerConfig()
 	if err != nil {
 		return err
 	}
-	proxy.registerTcpListener(acceptPc)
+	clientPc, err := listenConfig.ListenPacket(context.Background(), "udp", listenAddr.String())
+	if err != nil {
+		return err
+	}
+	proxy.registerUDPListener(clientPc.(*net.UDPConn))
+	dlog.Noticef("Now listening to %v [UDP]", listenAddr)
+	return nil
+}
+
+func (proxy *Proxy) tcpListenerFromAddr(listenAddr *net.TCPAddr) error {
+	listenConfig, err := proxy.tcpListenerConfig()
+	if err != nil {
+		return err
+	}
+	acceptPc, err := listenConfig.Listen(context.Background(), "tcp", listenAddr.String())
+	if err != nil {
+		return err
+	}
+	proxy.registerTCPListener(acceptPc.(*net.TCPListener))
 	dlog.Noticef("Now listening to %v [TCP]", listenAddr)
 	return nil
 }
 
 func (proxy *Proxy) localDoHListenerFromAddr(listenAddr *net.TCPAddr) error {
-	acceptPc, err := net.ListenTCP("tcp", listenAddr)
+	listenConfig, err := proxy.tcpListenerConfig()
 	if err != nil {
 		return err
 	}
-	proxy.registerLocalDoHListener(acceptPc)
+	acceptPc, err := listenConfig.Listen(context.Background(), "tcp", listenAddr.String())
+	if err != nil {
+		return err
+	}
+	proxy.registerLocalDoHListener(acceptPc.(*net.TCPListener))
 	dlog.Noticef("Now listening to https://%v%v [DoH]", listenAddr, proxy.localDoHPath)
 	return nil
 }

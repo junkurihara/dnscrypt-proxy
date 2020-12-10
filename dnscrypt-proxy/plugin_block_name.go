@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -10,13 +11,12 @@ import (
 
 	"github.com/jedisct1/dlog"
 	"github.com/miekg/dns"
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 type BlockedNames struct {
 	allWeeklyRanges *map[string]WeeklyRanges
 	patternMatcher  *PatternMatcher
-	logger          *lumberjack.Logger
+	logger          io.Writer
 	format          string
 }
 
@@ -125,7 +125,7 @@ func (plugin *PluginBlockName) Init(proxy *Proxy) error {
 	if len(proxy.blockNameLogFile) == 0 {
 		return nil
 	}
-	blockedNames.logger = &lumberjack.Logger{LocalTime: true, MaxSize: proxy.logMaxSize, MaxAge: proxy.logMaxAge, MaxBackups: proxy.logMaxBackups, Filename: proxy.blockNameLogFile, Compress: true}
+	blockedNames.logger = Logger(proxy.logMaxSize, proxy.logMaxAge, proxy.logMaxBackups, proxy.blockNameLogFile)
 	blockedNames.format = proxy.blockNameFormat
 
 	return nil
@@ -181,10 +181,20 @@ func (plugin *PluginBlockNameResponse) Eval(pluginsState *PluginsState, msg *dns
 	answers := msg.Answer
 	for _, answer := range answers {
 		header := answer.Header()
-		if header.Class != dns.ClassINET || header.Rrtype != dns.TypeCNAME {
+		if header.Class != dns.ClassINET {
 			continue
 		}
-		target, err := NormalizeQName(answer.(*dns.CNAME).Target)
+		var target string
+		if header.Rrtype == dns.TypeCNAME {
+			target = answer.(*dns.CNAME).Target
+		} else if header.Rrtype == dns.TypeSVCB && answer.(*dns.SVCB).Priority == 0 {
+			target = answer.(*dns.SVCB).Target
+		} else if header.Rrtype == dns.TypeHTTPS && answer.(*dns.HTTPS).Priority == 0 {
+			target = answer.(*dns.HTTPS).Target
+		} else {
+			continue
+		}
+		target, err := NormalizeQName(target)
 		if err != nil {
 			return err
 		}

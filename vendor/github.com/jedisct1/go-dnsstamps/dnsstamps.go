@@ -75,12 +75,10 @@ func NewDNSCryptServerStampFromLegacy(serverAddrStr string, serverPkStr string, 
 
 func NewServerStampFromString(stampStr string) (ServerStamp, error) {
 	if !strings.HasPrefix(stampStr, "sdns:") {
-		return ServerStamp{}, errors.New("Stamps are expected to start with sdns:")
+		return ServerStamp{}, errors.New("Stamps are expected to start with \"sdns:\"")
 	}
 	stampStr = stampStr[5:]
-	if strings.HasPrefix(stampStr, "//") {
-		stampStr = stampStr[2:]
-	}
+	stampStr = strings.TrimPrefix(stampStr, "//")
 	bin, err := base64.RawURLEncoding.Strict().DecodeString(stampStr)
 	if err != nil {
 		return ServerStamp{}, err
@@ -330,14 +328,18 @@ func (stamp *ServerStamp) dohString() string {
 	bin = append(bin, uint8(len(serverAddrStr)))
 	bin = append(bin, []uint8(serverAddrStr)...)
 
-	last := len(stamp.Hashes) - 1
-	for i, hash := range stamp.Hashes {
-		vlen := len(hash)
-		if i < last {
-			vlen |= 0x80
+	if len(stamp.Hashes) == 0 {
+		bin = append(bin, uint8(0))
+	} else {
+		last := len(stamp.Hashes) - 1
+		for i, hash := range stamp.Hashes {
+			vlen := len(hash)
+			if i < last {
+				vlen |= 0x80
+			}
+			bin = append(bin, uint8(vlen))
+			bin = append(bin, hash...)
 		}
-		bin = append(bin, uint8(vlen))
-		bin = append(bin, hash...)
 	}
 
 	bin = append(bin, uint8(len(stamp.ProviderName)))
