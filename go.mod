@@ -12,16 +12,17 @@ require (
 	github.com/hectane/go-acl v0.0.0-20190604041725-da78bae5fc95
 	github.com/jedisct1/dlog v0.0.0-20201201133931-57e17ecd14f1
 	github.com/jedisct1/go-clocksmith v0.0.0-20190707124905-73e087c7979c
-	github.com/jedisct1/go-dnsstamps v0.0.0-20201129203013-2c136bd66b10
+	github.com/jedisct1/go-dnsstamps v0.0.0-20201211123510-8d2deeae02b9
 	github.com/jedisct1/go-minisign v0.0.0-20190909160543-45766022959e
 	github.com/jedisct1/xsecretbox v0.0.0-20200921000858-23f5ec706e6a
 	github.com/k-sone/critbitgo v1.4.0
 	github.com/kardianos/service v1.2.0
 	github.com/miekg/dns v1.1.35
 	github.com/powerman/check v1.3.0
-	golang.org/x/crypto v0.0.0-20201124201722-c8d3bf9c5392
-	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
-	golang.org/x/sys v0.0.0-20201130171929-760e229fe7c5
+	golang.org/x/crypto v0.0.0-20201208171446-5f87f3452ae9
+	golang.org/x/net v0.0.0-20201209123823-ac852fbbde11
+	golang.org/x/sys v0.0.0-20201207223542-d4d67f95c62d
+	golang.org/x/text v0.3.4 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
