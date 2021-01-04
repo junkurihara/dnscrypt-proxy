@@ -1,0 +1,4 @@
+## Whitelists support the same patterns as blacklists
+## If a name matches a whitelist entry, the corresponding session
+## will bypass names and IP filters.
+# www.example.com

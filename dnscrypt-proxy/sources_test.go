@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,7 @@ type SourceTestExpect struct {
 	urls           []string
 	Source         *Source
 	delay          time.Duration
+	prefix         string
 }
 
 func readFixture(t *testing.T, name string) []byte {
@@ -300,6 +302,7 @@ func prepSourceTestDownload(t *testing.T, d *SourceTestData, e *SourceTestExpect
 	}
 	for _, state := range downloadTest {
 		path := "/" + strconv.FormatUint(uint64(state), 10) + "/" + source
+		serverURL := d.server.URL
 		switch state {
 		case TestStateMissing, TestStateMissingSig:
 			e.err = "404 Not Found"
@@ -308,15 +311,19 @@ func prepSourceTestDownload(t *testing.T, d *SourceTestData, e *SourceTestExpect
 		case TestStateReadErr, TestStateReadSigErr:
 			e.err = "unexpected EOF"
 		case TestStateOpenErr, TestStateOpenSigErr:
-			path = "00000" + path // high numeric port is parsed but then fails to connect
+			if u, err := url.Parse(serverURL + path); err == nil {
+				host, port := ExtractHostAndPort(u.Host, -1)
+				u.Host = fmt.Sprintf("%s:%d", host, port|0x10000) // high numeric port is parsed but then fails to connect
+				serverURL = u.String()
+			}
 			e.err = "invalid port"
 		case TestStatePathErr:
 			path = "..." + path // non-numeric port fails URL parsing
 		}
-		if u, err := url.Parse(d.server.URL + path); err == nil {
+		if u, err := url.Parse(serverURL + path); err == nil {
 			e.Source.urls = append(e.Source.urls, u)
 		}
-		e.urls = append(e.urls, d.server.URL+path)
+		e.urls = append(e.urls, serverURL+path)
 		if e.success {
 			continue
 		}
@@ -382,12 +389,12 @@ func TestNewSource(t *testing.T) {
 		refreshDelay time.Duration
 		e            *SourceTestExpect
 	}{
-		{"", "", 0, &SourceTestExpect{err: " ", Source: &Source{name: "short refresh delay", urls: []*url.URL{}, cacheTTL: DefaultPrefetchDelay, prefetchDelay: DefaultPrefetchDelay}}},
+		{"", "", 0, &SourceTestExpect{err: " ", Source: &Source{name: "short refresh delay", urls: []*url.URL{}, cacheTTL: DefaultPrefetchDelay, prefetchDelay: DefaultPrefetchDelay, prefix: ""}}},
 		{"v1", d.keyStr, DefaultPrefetchDelay * 2, &SourceTestExpect{err: "Unsupported source format", Source: &Source{name: "old format", urls: []*url.URL{}, cacheTTL: DefaultPrefetchDelay * 2, prefetchDelay: DefaultPrefetchDelay}}},
 		{"v2", "", DefaultPrefetchDelay * 3, &SourceTestExpect{err: "Invalid encoded public key", Source: &Source{name: "invalid public key", urls: []*url.URL{}, cacheTTL: DefaultPrefetchDelay * 3, prefetchDelay: DefaultPrefetchDelay}}},
 	} {
 		t.Run(tt.e.Source.name, func(t *testing.T) {
-			got, err := NewSource(tt.e.Source.name, d.xTransport, tt.e.urls, tt.key, tt.e.cachePath, tt.v, tt.refreshDelay)
+			got, err := NewSource(tt.e.Source.name, d.xTransport, tt.e.urls, tt.key, tt.e.cachePath, tt.v, tt.refreshDelay, tt.e.prefix)
 			checkResult(t, tt.e, got, err)
 		})
 	}
@@ -397,7 +404,7 @@ func TestNewSource(t *testing.T) {
 			for i := range d.sources {
 				id, e := setupSourceTestCase(t, d, i, &cacheTest, downloadTest)
 				t.Run("cache "+cacheTestName+", download "+downloadTestName+"/"+id, func(t *testing.T) {
-					got, err := NewSource(id, d.xTransport, e.urls, d.keyStr, e.cachePath, "v2", DefaultPrefetchDelay*3)
+					got, err := NewSource(id, d.xTransport, e.urls, d.keyStr, e.cachePath, "v2", DefaultPrefetchDelay*3, "")
 					checkResult(t, e, got, err)
 				})
 			}
