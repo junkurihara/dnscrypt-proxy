@@ -1,0 +1,19 @@
+version: '3'
+services:
+  dnscrypt-proxy:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    image: jqtype/dnscrypt-proxy-blacklist
+    container_name: dnscrypt-proxy
+    env_file:
+      - ./dnscrypt.env
+    restart: always
+    ports:
+      - "127.0.0.1:53:53/udp"
+#    expose:
+#      - "53"
+    tty: true
+    volumes:
+      - ./log:/var/log/dnscrypt-proxy
+      - ./custom:/custom
