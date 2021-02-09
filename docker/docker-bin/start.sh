@@ -6,7 +6,7 @@ DOMAINS_BLACKLIST=/etc/domains-blacklist.txt
 if [ -z "$CUSTOM_DOMAIN_BLACKLIST" ]; then
     echo "generate blacklist"
     cd /tmp/domains-blocklist
-    /usr/local/bin/generate-domains-blocklist.py -c /tmp/dnscrypt-proxy/domains-blacklist.conf -a /tmp/dnscrypt-proxy/domains-whitelist.conf -r /tmp/dnscrypt-proxy/domains-time-restricted.conf > /etc/domains-blacklist.txt
+    /usr/local/bin/generate-domains-blocklist.py -c /tmp/domains-blocklist/domains-blocklist.conf -a /tmp/domains-blocklist/domains-allowlist.txt -r /tmp/domains-blocklist/domains-time-restricted.txt -o /etc/domains-blacklist.txt
 else
     echo "use custom domain blacklist: $CUSTOM_DOMAIN_BLACKLIST"
     cp $CUSTOM_DOMAIN_BLACKLIST $DOMAINS_BLACKLIST
