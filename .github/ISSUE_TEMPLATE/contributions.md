@@ -1,6 +1,6 @@
 ---
-name: "❓ Question"
-about: Ask a question about dnscrypt-proxy or the DNSCrypt protocol
+name: "⛹🏼 Contributions"
+about: Contribute to the project
 title: ''
 labels: ''
 assignees: ''
@@ -8,7 +8,6 @@ assignees: ''
 ---
 
 ## Subject
-<!-- Select one: -->
 
 * [ ] I'd like to contribute to the project (code, documentation, website, advocacy, integration, ...)
 * [ ] I want to run my own DNSCrypt and/or DoH server
@@ -21,4 +20,3 @@ assignees: ''
 * [ ] Other
 
 ## Description
-
