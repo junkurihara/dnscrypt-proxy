@@ -360,7 +360,18 @@ func findFarthestRoute(proxy *Proxy, name string, relayStamps []stamps.ServerSta
 	return &relayStamps[bestRelayIdxs[rand.Intn(len(bestRelayIdxs))]]
 }
 
-func route(proxy *Proxy, name string) (*Relay, error) {
+func relayProtoForServerProto(proto stamps.StampProtoType) (stamps.StampProtoType, error) {
+	switch proto {
+	case stamps.StampProtoTypeDNSCrypt:
+		return stamps.StampProtoTypeDNSCryptRelay, nil
+	case stamps.StampProtoTypeODoHTarget:
+		return stamps.StampProtoTypeODoHRelay, nil
+	default:
+		return 0, errors.New("protocol cannot be anonymized")
+	}
+}
+
+func route(proxy *Proxy, name string, serverProto stamps.StampProtoType) (*Relay, error) {
 	routes := proxy.routes
 	if routes == nil {
 		return nil, nil
@@ -371,17 +382,27 @@ func route(proxy *Proxy, name string) (*Relay, error) {
 		wildcard = true
 		relayNames, ok = (*routes)["*"]
 	}
-	if !ok {
+	if !ok || len(relayNames) == 0 {
+		return nil, nil
+	}
+
+	relayProto, err := relayProtoForServerProto(serverProto)
+	if err != nil {
+		dlog.Errorf("Server [%v]'s protocol doesn't support anonymization", name)
 		return nil, nil
 	}
 	relayStamps := make([]stamps.ServerStamp, 0)
 	for _, relayName := range relayNames {
 		if relayStamp, err := stamps.NewServerStampFromString(relayName); err == nil {
-			relayStamps = append(relayStamps, relayStamp)
+			if relayStamp.Proto == relayProto {
+				relayStamps = append(relayStamps, relayStamp)
+			}
 		} else if relayName == "*" {
 			proxy.serversInfo.RLock()
 			for _, registeredServer := range proxy.serversInfo.registeredRelays {
-				relayStamps = append(relayStamps, registeredServer.stamp)
+				if registeredServer.stamp.Proto == relayProto {
+					relayStamps = append(relayStamps, registeredServer.stamp)
+				}
 			}
 			proxy.serversInfo.RUnlock()
 			wildcard = true
@@ -389,13 +410,13 @@ func route(proxy *Proxy, name string) (*Relay, error) {
 		} else {
 			proxy.serversInfo.RLock()
 			for _, registeredServer := range proxy.serversInfo.registeredRelays {
-				if registeredServer.name == relayName {
+				if registeredServer.name == relayName && registeredServer.stamp.Proto == relayProto {
 					relayStamps = append(relayStamps, registeredServer.stamp)
 					break
 				}
 			}
 			for _, registeredServer := range proxy.serversInfo.registeredServers {
-				if registeredServer.name == relayName {
+				if registeredServer.name == relayName && registeredServer.stamp.Proto == relayProto {
 					relayStamps = append(relayStamps, registeredServer.stamp)
 					break
 				}
@@ -404,7 +425,8 @@ func route(proxy *Proxy, name string) (*Relay, error) {
 		}
 	}
 	if len(relayStamps) == 0 {
-		return nil, fmt.Errorf("Empty relay set for [%v]", name)
+		dlog.Warnf("Empty relay set for [%v]", name)
+		return nil, nil
 	}
 	var relayCandidateStamp *stamps.ServerStamp
 	if !wildcard || len(relayStamps) == 1 {
@@ -488,7 +510,7 @@ func fetchDNSCryptServerInfo(proxy *Proxy, name string, stamp stamps.ServerStamp
 			break
 		}
 	}
-	relay, err := route(proxy, name)
+	relay, err := route(proxy, name, stamp.Proto)
 	if err != nil {
 		return ServerInfo{}, err
 	}
@@ -690,26 +712,33 @@ func fetchTargetConfigsFromWellKnown(proxy *Proxy, url *url.URL) ([]ODoHTargetCo
 func _fetchODoHTargetInfo(proxy *Proxy, name string, stamp stamps.ServerStamp, isNew bool) (ServerInfo, error) {
 	configURL := &url.URL{Scheme: "https", Host: stamp.ProviderName, Path: "/.well-known/odohconfigs"}
 	odohTargetConfigs, err := fetchTargetConfigsFromWellKnown(proxy, configURL)
-	if err != nil || len(odohTargetConfigs) == 0 {
-		return ServerInfo{}, fmt.Errorf("[%s] does not have an ODoH configuration", name)
+	if err != nil {
+		dlog.Debug(configURL)
+		return ServerInfo{}, fmt.Errorf("[%s] didn't return an ODoH configuration - [%v]", name, err)
+	} else if len(odohTargetConfigs) == 0 {
+		dlog.Debug(configURL)
+		return ServerInfo{}, fmt.Errorf("[%s] has an empty ODoH configuration", name)
 	}
 
-	relay, err := route(proxy, name)
+	relay, err := route(proxy, name, stamp.Proto)
 	if err != nil {
 		return ServerInfo{}, err
 	}
-	if relay == nil || relay.ODoH == nil {
-		relay = nil
-	}
 
 	if relay == nil {
-		dlog.Warnf("No ODoH relay defined for [%v]", name)
+		dlog.Criticalf("No relay defined for [%v] - Configuring a relay is required for ODoH servers (see the `[anonymized_dns]` section)", name)
+		return ServerInfo{}, errors.New("No ODoH relay")
 	} else {
-		dlog.Debugf("Pausing after ODoH configuration retrieval")
-		delay := time.Duration(rand.Intn(5*1000)) * time.Millisecond
-		clocksmith.Sleep(time.Duration(delay))
-		dlog.Debugf("Pausing done")
+		if relay.ODoH == nil {
+			dlog.Criticalf("Wrong relay type defined for [%v] - ODoH servers require an ODoH relay", name)
+			return ServerInfo{}, errors.New("Wrong ODoH relay type")
+		}
 	}
+
+	dlog.Debugf("Pausing after ODoH configuration retrieval")
+	delay := time.Duration(rand.Intn(5*1000)) * time.Millisecond
+	clocksmith.Sleep(time.Duration(delay))
+	dlog.Debugf("Pausing done")
 
 	targetURL := &url.URL{
 		Scheme: "https",
@@ -722,10 +751,7 @@ func _fetchODoHTargetInfo(proxy *Proxy, name string, stamp stamps.ServerStamp, i
 		odohTargetConfigs[i], odohTargetConfigs[j] = odohTargetConfigs[j], odohTargetConfigs[i]
 	})
 	for _, odohTargetConfig := range odohTargetConfigs {
-		url := targetURL
-		if relay != nil {
-			url = relay.ODoH.URL
-		}
+		url := relay.ODoH.URL
 
 		query := dohTestPacket(0xcafe)
 		odohQuery, err := odohTargetConfig.encryptQuery(query)
