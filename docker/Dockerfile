@@ -4,7 +4,8 @@ LABEL maintainer "Jun Kurihara <kurihara@ieee.org>"
 
 COPY . /go/src/dp/
 
-RUN cd /go/src/dp/dnscrypt-proxy && \
+RUN apk --no-cache add git && \
+    cd /go/src/dp/dnscrypt-proxy && \
     CGO_ENABLED=0 GOOS=linux go install -a -ldflags '-s -w -extldflags "-static"' -v ./...
 
 FROM alpine:latest
