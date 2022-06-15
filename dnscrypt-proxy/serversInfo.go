@@ -338,6 +338,7 @@ func findFarthestRoute(proxy *Proxy, name string, relayStamps []stamps.ServerSta
 		}
 	}
 	if serverIdx < 0 {
+		proxy.serversInfo.RUnlock()
 		return nil
 	}
 	server := proxy.serversInfo.registeredServers[serverIdx]
@@ -466,8 +467,9 @@ func route(proxy *Proxy, name string, serverProto stamps.StampProtoType) (*Relay
 		}
 	}
 	if len(relayStamps) == 0 {
-		dlog.Warnf("Empty relay set for [%v]", name)
-		return nil, nil
+		err := fmt.Errorf("Non-existent relay set for server [%v]", name)
+		dlog.Warn(err)
+		return nil, err
 	}
 	var relayCandidateStamp *stamps.ServerStamp
 	if !wildcard || len(relayStamps) == 1 {
