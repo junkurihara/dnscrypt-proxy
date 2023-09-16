@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,6 +106,7 @@ func NewCryptoSetupClient(
 // NewCryptoSetupServer creates a new crypto setup for the server
 func NewCryptoSetupServer(
 	connID protocol.ConnectionID,
+	localAddr, remoteAddr net.Addr,
 	tp *wire.TransportParameters,
 	tlsConf *tls.Config,
 	allow0RTT bool,
@@ -125,11 +128,37 @@ func NewCryptoSetupServer(
 
 	quicConf := &qtls.QUICConfig{TLSConfig: tlsConf}
 	qtls.SetupConfigForServer(quicConf, cs.allow0RTT, cs.getDataForSessionTicket, cs.accept0RTT)
+	addConnToClientHelloInfo(quicConf.TLSConfig, localAddr, remoteAddr)
 
 	cs.tlsConf = quicConf.TLSConfig
 	cs.conn = qtls.QUICServer(quicConf)
 
 	return cs
+}
+
+// The tls.Config contains two callbacks that pass in a tls.ClientHelloInfo.
+// Since crypto/tls doesn't do it, we need to make sure to set the Conn field with a fake net.Conn
+// that allows the caller to get the local and the remote address.
+func addConnToClientHelloInfo(conf *tls.Config, localAddr, remoteAddr net.Addr) {
+	if conf.GetConfigForClient != nil {
+		gcfc := conf.GetConfigForClient
+		conf.GetConfigForClient = func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			info.Conn = &conn{localAddr: localAddr, remoteAddr: remoteAddr}
+			c, err := gcfc(info)
+			if c != nil {
+				// We're returning a tls.Config here, so we need to apply this recursively.
+				addConnToClientHelloInfo(c, localAddr, remoteAddr)
+			}
+			return c, err
+		}
+	}
+	if conf.GetCertificate != nil {
+		gc := conf.GetCertificate
+		conf.GetCertificate = func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			info.Conn = &conn{localAddr: localAddr, remoteAddr: remoteAddr}
+			return gc(info)
+		}
+	}
 }
 
 func newCryptoSetup(
@@ -328,10 +357,15 @@ func (h *cryptoSetup) getDataForSessionTicket() []byte {
 // Due to limitations in crypto/tls, it's only possible to generate a single session ticket per connection.
 // It is only valid for the server.
 func (h *cryptoSetup) GetSessionTicket() ([]byte, error) {
-	if h.tlsConf.SessionTicketsDisabled {
-		return nil, nil
-	}
-	if err := h.conn.SendSessionTicket(h.allow0RTT); err != nil {
+	if err := qtls.SendSessionTicket(h.conn, h.allow0RTT); err != nil {
+		// Session tickets might be disabled by tls.Config.SessionTicketsDisabled.
+		// We can't check h.tlsConfig here, since the actual config might have been obtained from
+		// the GetConfigForClient callback.
+		// See https://github.com/golang/go/issues/62032.
+		// Once that issue is resolved, this error assertion can be removed.
+		if strings.Contains(err.Error(), "session ticket keys unavailable") {
+			return nil, nil
+		}
 		return nil, err
 	}
 	ev := h.conn.NextEvent()
@@ -630,8 +664,9 @@ func (h *cryptoSetup) ConnectionState() ConnectionState {
 }
 
 func wrapError(err error) error {
+	// alert 80 is an internal error
 	if alertErr := qtls.AlertError(0); errors.As(err, &alertErr) && alertErr != 80 {
-		return qerr.NewLocalCryptoError(uint8(alertErr), err.Error())
+		return qerr.NewLocalCryptoError(uint8(alertErr), err)
 	}
 	return &qerr.TransportError{ErrorCode: qerr.InternalError, ErrorMessage: err.Error()}
 }
