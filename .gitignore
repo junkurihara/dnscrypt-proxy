@@ -16,3 +16,6 @@ dnscrypt-proxy/dnscrypt-proxy
 .ci/test-dnscrypt-proxy.toml
 .vscode
 .private
+contrib/msi/*.msi
+contrib/msi/*.wixpdb
+contrib/msi/*.wixobj
