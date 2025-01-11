@@ -362,7 +362,7 @@ func findFarthestRoute(proxy *Proxy, name string, relayStamps []stamps.ServerSta
 	server := proxy.serversInfo.registeredServers[serverIdx]
 	proxy.serversInfo.RUnlock()
 
-	// Fall back to random relays until the logic is implementeed for non-DNSCrypt relays
+	// Fall back to random relays until the logic is implemented for non-DNSCrypt relays
 	if server.stamp.Proto == stamps.StampProtoTypeODoHTarget {
 		candidates := make([]int, 0)
 		for relayIdx, relayStamp := range relayStamps {
@@ -706,7 +706,7 @@ func fetchDoHServerInfo(proxy *Proxy, name string, stamp stamps.ServerStamp, isN
 		return ServerInfo{}, err
 	}
 	if msg.Rcode != dns.RcodeNameError {
-		dlog.Criticalf("[%s] may be a lying resolver", name)
+		return ServerInfo{}, fmt.Errorf("[%s] may be a lying resolver -- skipping", name)
 	}
 	protocol := tls.NegotiatedProtocol
 	if len(protocol) == 0 {
@@ -869,7 +869,7 @@ func _fetchODoHTargetInfo(proxy *Proxy, name string, stamp stamps.ServerStamp, i
 			return ServerInfo{}, err
 		}
 		if msg.Rcode != dns.RcodeNameError {
-			dlog.Criticalf("[%s] may be a lying resolver", name)
+			return ServerInfo{}, fmt.Errorf("[%s] may be a lying resolver -- skipping", name)
 		}
 		protocol := "http"
 		tlsVersion := uint16(0)
